@@ -1187,6 +1187,7 @@ class LocalGenerator:
                     skip_cache_setup=not is_first_sample,
                     max_seq_length=max_seq_length,
                 )
+                start_pos += encoded.size(0)
                 for token_tensor, metrics in generator_func:
                     if token_tensor is not None:
                         start_pos += token_tensor.size(0)
@@ -1593,7 +1594,7 @@ def run_generator(
     builder_args = BuilderArgs.from_args(args)
     speculative_builder_args = BuilderArgs.from_speculative_args(args)
     tokenizer_args = TokenizerArgs.from_args(args)
-    generator_args = GeneratorArgs.from_args(args)    
+    generator_args = GeneratorArgs.from_args(args)
     #Setup rank 1 and up to suppress log messages and print messages
     if builder_args.distributed and rank != 0:
         logger.setLevel(logging.CRITICAL)
