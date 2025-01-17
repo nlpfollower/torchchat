@@ -66,7 +66,7 @@ def load_dcp_checkpoint(config: ModelArgs, checkpoint_path: str):
     job_config.job.dump_folder = str(dump_folder)
 
     # Initialize the model using TorchTitan's approach
-    model_config = llama3_configs["8B"]  # You can adjust the size as needed
+    model_config = llama3_configs["3B"]  # You can adjust the size as needed
     model_config.norm_type = "rmsnorm"
     model_config.vocab_size = config.vocab_size
     model_config.max_seq_len = config.max_seq_length or 2048

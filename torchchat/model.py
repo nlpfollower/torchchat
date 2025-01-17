@@ -730,7 +730,7 @@ class Transformer(nn.Module):
     def forward(self, x: Tensor, input_pos: Optional[Tensor] = None, cache_lane: int = 0) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         if os.getenv('DEBUG_CACHE'):
-            print("\nTransformer forward input pos", input_pos)
+            print("Transformer forward input pos", input_pos)
         mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
         if self.tok_embeddings:
@@ -896,12 +896,8 @@ class Attention(nn.Module):
         k = apply_rotary_emb(k, freqs_cis)
 
         q, k, v = (x.transpose(1, 2) for x in (q, k, v))
-        # if self.layer_id == 0:
-        #     print(f"k shape: {k.shape} {k[0][0][:][:4,:2]}, v shape: {v.shape} {v[0][0][:][:4,:2]}.")
         if self.kv_cache is not None:
             k, v = self.kv_cache[cache_lane].update(input_pos, k, v)
-        # if self.layer_id == 0:
-        #     print(f"after k shape: {k.shape} {k[0][0][:][:4, :2]}, v shape: {v.shape} {v[0][0][:][:4, :2]}.")
         k = k.repeat_interleave(self.n_heads // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_heads // self.n_local_heads, dim=1)
         y = F.scaled_dot_product_attention(

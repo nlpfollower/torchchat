@@ -34,7 +34,7 @@ def signal_handler(sig, frame):
 
 
 if __name__ == "__main__":
-    pydevd_pycharm.settrace('localhost', port=6789, stdoutToServer=True, stderrToServer=True)
+    pydevd_pycharm.settrace('localhost', port=6790, stdoutToServer=True, stderrToServer=True)
 
     # Set the signal handler for SIGINT
     signal.signal(signal.SIGINT, signal_handler)
