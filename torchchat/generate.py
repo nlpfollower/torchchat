@@ -542,6 +542,8 @@ class LocalGenerator:
             with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
 
                 out_token = cur_token.clone()
+                if os.getenv('DEBUG_CACHE'):
+                    print(f"decode_n_tokens input_pos: {input_pos}")
                 next_token, next_prob = self.decode_one_token(
                     model,
                     out_token,
@@ -574,6 +576,9 @@ class LocalGenerator:
                         **sampling_kwargs,
                     )
                     input_pos += 1
+                    if os.getenv('DEBUG_CACHE'):
+                        print(f"final token input_pos: {input_pos}")
+                    yield cur_token.clone(), next_prob.clone()
                     break
 
         if not encountered_eos:
@@ -729,6 +734,7 @@ class LocalGenerator:
             start_pos, prompt_length + start_pos, device=device, dtype=torch.int
         )
 
+        print(f"generate input_pos {input_pos}, start_pos {start_pos}, prompt_length {prompt_length}")
         prefill_t0 = time.perf_counter()
         next_token = self.prefill(
             model,
@@ -1170,7 +1176,9 @@ class LocalGenerator:
                 prof = torch.profiler.profile()
             t0 = time.perf_counter()
             num_tokens_generated = 0
+            local_token_tensor = []
             with prof:
+                print(f"Generate start_pos {start_pos}")
                 generator_func = self.generate(
                     self.model,
                     encoded,
@@ -1191,6 +1199,9 @@ class LocalGenerator:
                     start_pos += encoded.size(0)
                 for token_tensor, metrics in generator_func:
                     if token_tensor is not None:
+                        if os.getenv('DEBUG_CACHE'):
+                            print(f"Token tensor: {token_tensor}")
+                        local_token_tensor.append(token_tensor.tolist()[0])
                         start_pos += token_tensor.size(0)
                         num_tokens_generated += token_tensor.size(0)
                     if metrics is not None:
@@ -1199,6 +1210,8 @@ class LocalGenerator:
             jit_compile = is_first_sample and (
                 generator_args.compile or generator_args.compile_prefill
             )
+            print(f"local_token_tensor: {local_token_tensor}")
+            print(self.tokenizer.decode(local_token_tensor))
             compilation_time = time.perf_counter() - t0
             device_sync(device=self.builder_args.device)
             t = time.perf_counter() - t0

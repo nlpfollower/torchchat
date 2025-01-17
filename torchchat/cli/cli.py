@@ -120,6 +120,18 @@ def _add_model_specification_args(parser) -> None:
         default="not_specified",
         help="Use the specified model checkpoint path",
     )
+    exclusive_parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=None,
+        help="Use the specified model checkpoint directory",
+    )
+    exclusive_parser.add_argument(
+        "--dcp-dir",
+        type=Path,
+        default=None,
+        help="Use the specified model checkpoint directory",
+    )
 
     _add_custom_model_args(model_specification_parser)
     exclusive_parser.add_argument(
@@ -421,13 +433,6 @@ def _add_distributed_args(parser) -> None:
         "--distributed",
         action="store_true",
         help="Whether to enable distributed inference",
-    )
-    parser.add_argument(
-        "--dcp-dir",
-        type=Path,
-        default=None,
-        help=argparse.SUPPRESS,
-        # "Use the specified model checkpoint directory",
     )
     parser.add_argument(
         "--pp",

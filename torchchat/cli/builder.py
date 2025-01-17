@@ -16,6 +16,7 @@ import torch._dynamo.config
 import torch._inductor.config
 import torch.distributed as dist
 
+from torchchat.cli.dcp_util import load_dcp_checkpoint
 from torchchat.distributed.utils import(
     Color as color,
     CUDATrackTime,
@@ -69,6 +70,7 @@ class BuilderArgs:
     prefill_possible: bool = False
     dynamic_shapes: bool = False
     max_seq_length: Optional[int] = None
+    vocab_size: Optional[int] = None
 
     def __post_init__(self):
         if self.device is None:
@@ -81,6 +83,7 @@ class BuilderArgs:
             or (self.dso_path and Path(self.dso_path).is_file())
             or (self.aoti_package_path and Path(self.aoti_package_path).is_file())
             or (self.pte_path and Path(self.pte_path).is_file())
+            or (self.dcp_dir and Path(self.dcp_dir).is_dir())
         ):
             raise RuntimeError(
                 "need to specify a valid checkpoint path, checkpoint dir, gguf path, DSO path, AOTI PACKAGE or PTE path"
@@ -279,8 +282,8 @@ class TokenizerArgs:
         is_tiktoken = self.is_tiktoken
         is_sentencepiece = self.is_sentencepiece
         is_hf_tokenizer = self.is_hf_tokenizer
-        use_tiktoken = model.config.use_tiktoken
-        use_hf_tokenizer = model.config.use_hf_tokenizer
+        use_tiktoken = True
+        use_hf_tokenizer = False
         use_sentencepiece = not (use_tiktoken or use_hf_tokenizer)
 
         if (
@@ -403,7 +406,7 @@ def _load_checkpoint(builder_args: BuilderArgs):
         # Load multiple checkpoint; ignore the single path.
         builder_args.checkpoint_path = None
         cps = []
-        for i in range(4):
+        for i in range(1):
             cp_name = f"consolidated.{i}.pth"
             print(f"Loading {cp_name}")
             cps.append(
@@ -416,6 +419,10 @@ def _load_checkpoint(builder_args: BuilderArgs):
             )
         checkpoint = {}
         for key in cps[0].keys():
+            if len(cps) == 1:
+                checkpoint[key] = cps[0][key]
+                continue
+
             if not torch.allclose(cps[0][key], cps[1][key]):
                 values = (cps[0][key], cps[1][key], cps[2][key], cps[3][key])
                 if key.endswith("wo.weight") or key.endswith("w2.weight"):
@@ -477,6 +484,14 @@ def _load_model_default(builder_args: BuilderArgs) -> Model:
 def _load_model(builder_args: BuilderArgs) -> Model:
     if builder_args.gguf_path:
         model = _load_model_gguf(builder_args)
+    elif builder_args.dcp_dir:
+        config = (ModelArgs.from_params(builder_args.params_path)
+                  if builder_args.params_path
+                  else ModelArgs.from_table(builder_args.params_table))
+        config.vocab_size = builder_args.vocab_size
+        config.max_seq_length = builder_args.max_seq_length
+        model = load_dcp_checkpoint(config, builder_args.dcp_dir)
+        return model.eval()
     else:
         model = _load_model_default(builder_args)
 
@@ -500,6 +515,9 @@ def _initialize_model(
     max_seq_length=None,
     support_tensor_subclass: bool = True,
 ) -> Model:
+    if tokenizer is not None:
+        builder_args.vocab_size = tokenizer.n_words
+
     print("Loading model...")
     if builder_args.gguf_path and (
         builder_args.dso_path or builder_args.pte_path or builder_args.aoti_package_path

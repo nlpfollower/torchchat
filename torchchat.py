@@ -12,6 +12,9 @@ import sys
 # MPS ops missing with Multimodal torchtune
 # https://github.com/pytorch/torchtune/issues/1723
 import os
+
+import pydevd_pycharm
+
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 from torchchat.cli.cli import (
@@ -31,6 +34,8 @@ def signal_handler(sig, frame):
 
 
 if __name__ == "__main__":
+    pydevd_pycharm.settrace('localhost', port=6789, stdoutToServer=True, stderrToServer=True)
+
     # Set the signal handler for SIGINT
     signal.signal(signal.SIGINT, signal_handler)
 
