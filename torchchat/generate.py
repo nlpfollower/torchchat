@@ -576,6 +576,9 @@ class LocalGenerator:
                         **sampling_kwargs,
                     )
                     input_pos += 1
+                    if os.getenv('DEBUG_CACHE'):
+                        print(f"final token input_pos: {input_pos}")
+                    yield cur_token.clone(), next_prob.clone()
                     break
 
         if not encountered_eos:
@@ -1174,6 +1177,7 @@ class LocalGenerator:
                 prof = torch.profiler.profile()
             t0 = time.perf_counter()
             num_tokens_generated = 0
+            local_token_tensor = []
             with prof:
                 generator_func = self.generate(
                     self.model,
@@ -1196,6 +1200,9 @@ class LocalGenerator:
                     start_pos += encoded.size(0)
                 for token_tensor, metrics in generator_func:
                     if token_tensor is not None:
+                        if os.getenv('DEBUG_CACHE'):
+                            print(f"Token tensor: {token_tensor}")
+                            local_token_tensor.append(token_tensor.tolist()[0])
                         start_pos += token_tensor.size(0)
                         num_tokens_generated += token_tensor.size(0)
                     if metrics is not None:
@@ -1204,6 +1211,9 @@ class LocalGenerator:
             jit_compile = is_first_sample and (
                 generator_args.compile or generator_args.compile_prefill
             )
+            if os.getenv('DEBUG_CACHE'):
+                print(f"local_token_tensor: {local_token_tensor}")
+                print(self.tokenizer.decode(local_token_tensor))
             compilation_time = time.perf_counter() - t0
             device_sync(device=self.builder_args.device)
             t = time.perf_counter() - t0
