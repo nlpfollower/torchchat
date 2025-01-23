@@ -724,7 +724,10 @@ class Transformer(nn.Module):
     def forward(self, x: Tensor, input_pos: Optional[Tensor] = None, cache_lane: int = 0) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         if os.getenv('DEBUG_CACHE'):
-            print(f"Transformer forward input pos: {input_pos}", end=" | ")
+            def get_cache_sample(input_pos):
+                return self.layers['0'].attention.kv_cache[0].k_cache[0][0][input_pos][0].tolist()
+            first_pos = input_pos[0].item()
+            print(f"Transformer before forward input pos: {input_pos}; (pos={first_pos} cache_sample={get_cache_sample(first_pos)})" , end=" | ")
         mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
         if self.tok_embeddings:
@@ -748,9 +751,8 @@ class Transformer(nn.Module):
         if os.getenv('DEBUG_CACHE'):
             def get_cache_sample(input_pos):
                 return self.layers['0'].attention.kv_cache[0].k_cache[0][0][input_pos][0].tolist()
-            last_input_pos = input_pos[-1].item()
-            print(f"Transformer after forward cache (input_pos={last_input_pos-1}; cache_sample={get_cache_sample(last_input_pos-1)}) "
-                  f"(input_pos={last_input_pos}; cache_sample={get_cache_sample(last_input_pos)}) (input_pos={last_input_pos+1}; cache_sample={get_cache_sample(last_input_pos+1)})")
+            first_pos = input_pos[0].item()
+            print(f"Transformer after forward cache (pos={first_pos}; cache_sample={get_cache_sample(first_pos)})")
 
         return x
 
