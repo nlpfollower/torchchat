@@ -723,6 +723,8 @@ class Transformer(nn.Module):
 
     def forward(self, x: Tensor, input_pos: Optional[Tensor] = None, cache_lane: int = 0) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
+        if os.getenv('DEBUG_CACHE'):
+            print("Transformer forward input pos", input_pos)
         mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
         if self.tok_embeddings:
