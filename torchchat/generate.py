@@ -20,6 +20,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+import pydevd_pycharm
 import torch
 import torch._dynamo.config
 import torch._inductor.config
@@ -575,9 +576,9 @@ class LocalGenerator:
                         batch=batch,
                         **sampling_kwargs,
                     )
-                    input_pos += 1
                     if os.getenv('DEBUG_CACHE'):
-                        print(f"final token input_pos: {input_pos}")
+                        print(f"last cur_token: {cur_token}")
+                        print(f"final token {final_token} input_pos: {input_pos}")
                     yield cur_token.clone(), next_prob.clone()
                     break
 
@@ -839,7 +840,8 @@ class LocalGenerator:
             done_generating = True
             buffer = buffer[:-1]  # drop the eot_id from the output buffer
         if len(buffer) == 4 or done_generating:
-            print("".join(buffer), end="", flush=True)
+            if not os.getenv('DEBUG_CACHE'):
+                print("".join(buffer), end="", flush=True)
             buffer.clear()
 
     def _gen_model_input(
@@ -1201,7 +1203,7 @@ class LocalGenerator:
                 for token_tensor, metrics in generator_func:
                     if token_tensor is not None:
                         if os.getenv('DEBUG_CACHE'):
-                            print(f"Token tensor: {token_tensor}")
+                            # print(f"Token tensor: {token_tensor}")
                             local_token_tensor.append(token_tensor.tolist()[0])
                         start_pos += token_tensor.size(0)
                         num_tokens_generated += token_tensor.size(0)
@@ -1216,57 +1218,58 @@ class LocalGenerator:
                 print(self.tokenizer.decode(local_token_tensor))
             compilation_time = time.perf_counter() - t0
             device_sync(device=self.builder_args.device)
-            t = time.perf_counter() - t0
-            if hasattr(prof, "export_chrome_trace"):
-                if self.builder_args.device == "cpu":
-                    print(prof.key_averages().table(sort_by="self_cpu_time_total"))
-                elif self.builder_args.device == "cuda":
-                    print(prof.key_averages().table(sort_by="self_cuda_time_total"))
-                else:
-                    print(prof.key_averages().table(sort_by="self_xpu_time_total"))
-                prof.export_chrome_trace(f"{self.profile}.json")
-
-            if start_pos >= max_seq_length:
-                print(
-                    f"[Max Sequence Length {max_seq_length} Reached. Ending Conversation.]"
-                )
-                print("---------------------------------------------------")
-
-            tokens_sec = (num_tokens_generated + 1) / t
-            first_token_sec = 1 / aggregate_metrics.get("time_to_first_token", 0)
-            next_tokens_sec = num_tokens_generated / (
-                t - aggregate_metrics.get("time_to_first_token", 0)
-            )
-
-            if jit_compile:
-                print(
-                    f"just-in-time compilation time (incl run time): {compilation_time:.2} seconds"
-                )
-            else:
-                # aggregate_metrics will not append when is jit_compile, which will affect the average numbers.
-                aggregate_metrics["tokens_per_sec"].append(tokens_sec)
-                aggregate_metrics["first_token_per_sec"].append(first_token_sec)
-                aggregate_metrics["next_tokens_per_sec"].append(next_tokens_sec)
-
-            logging.info(
-                f"\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\
-                \nGenerated {num_tokens_generated} tokens \
-                \nTime for inference {i + 1}: {t:.04f} sec total \
-                \nTime to first token: {aggregate_metrics.get('time_to_first_token', 0):.04f} sec \
-with {'sequential' if generator_args.sequential_prefill else 'parallel'} prefill.\
-                \n\n      Total throughput: {tokens_sec:.04f} tokens/sec, {1 / tokens_sec:.04f} s/token \
-                \nFirst token throughput: {first_token_sec:.04f} tokens/sec, {1 / first_token_sec:.04f} s/token \
-                \n Next token throughput: {next_tokens_sec:.04f} tokens/sec, {1 / next_tokens_sec:.04f} s/token \
-                    "
-            )
-            logging.info(
-                f"\nBandwidth achieved: {model_size * tokens_sec / 1e9:.02f} GB/s"
-            )
-            if i == 0:
-                logging.info(
-                    f"*** This first iteration will include cold start effects for dynamic import, hardware caches{', JIT compilation' if jit_compile else ''}. ***"
-                )
-            print("\n========================================\n")
+#             t = time.perf_counter() - t0
+#             if hasattr(prof, "export_chrome_trace"):
+#                 if self.builder_args.device == "cpu":
+#                     print(prof.key_averages().table(sort_by="self_cpu_time_total"))
+#                 elif self.builder_args.device == "cuda":
+#                     print(prof.key_averages().table(sort_by="self_cuda_time_total"))
+#                 else:
+#                     print(prof.key_averages().table(sort_by="self_xpu_time_total"))
+#                 prof.export_chrome_trace(f"{self.profile}.json")
+#
+#             if start_pos >= max_seq_length:
+#                 print(
+#                     f"[Max Sequence Length {max_seq_length} Reached. Ending Conversation.]"
+#                 )
+#                 print("---------------------------------------------------")
+#
+#             tokens_sec = (num_tokens_generated + 1) / t
+#             first_token_sec = 1 / aggregate_metrics.get("time_to_first_token", 0)
+#             next_tokens_sec = num_tokens_generated / (
+#                 t - aggregate_metrics.get("time_to_first_token", 0)
+#             )
+#
+#             if jit_compile:
+#                 print(
+#                     f"just-in-time compilation time (incl run time): {compilation_time:.2} seconds"
+#                 )
+#             else:
+#                 # aggregate_metrics will not append when is jit_compile, which will affect the average numbers.
+#                 aggregate_metrics["tokens_per_sec"].append(tokens_sec)
+#                 aggregate_metrics["first_token_per_sec"].append(first_token_sec)
+#                 aggregate_metrics["next_tokens_per_sec"].append(next_tokens_sec)
+#
+#             logging.info(
+#                 f"\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\
+#                 \nGenerated {num_tokens_generated} tokens \
+#                 \nTime for inference {i + 1}: {t:.04f} sec total \
+#                 \nTime to first token: {aggregate_metrics.get('time_to_first_token', 0):.04f} sec \
+# with {'sequential' if generator_args.sequential_prefill else 'parallel'} prefill.\
+#                 \n\n      Total throughput: {tokens_sec:.04f} tokens/sec, {1 / tokens_sec:.04f} s/token \
+#                 \nFirst token throughput: {first_token_sec:.04f} tokens/sec, {1 / first_token_sec:.04f} s/token \
+#                 \n Next token throughput: {next_tokens_sec:.04f} tokens/sec, {1 / next_tokens_sec:.04f} s/token \
+#                     "
+#             )
+#             logging.info(
+#                 f"\nBandwidth achieved: {model_size * tokens_sec / 1e9:.02f} GB/s"
+#             )
+#             if i == 0:
+#                 logging.info(
+#                     f"*** This first iteration will include cold start effects for dynamic import, hardware caches{', JIT compilation' if jit_compile else ''}. ***"
+#                 )
+#             print("\n========================================\n")
+            print()
             if start_pos >= max_seq_length:
                 if generator_args.chat_mode:
                     break
