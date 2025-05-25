@@ -340,6 +340,8 @@ class ModelArgs:
     use_tiktoken: bool
     use_hf_tokenizer: bool
     tokenizer_prepend_bos: bool
+    vocab_size: Optional[int] = None
+    max_seq_length: Optional[int] = None
 
     def __init__(
         self,
@@ -474,10 +476,13 @@ class Model(ABC, nn.Module):
     The entrance for model construction in torchchat.
     """
 
-    def __init__(self, config: ModelArgs) -> None:
+    def __init__(self, config: ModelArgs, skip_model_init: bool = False) -> None:
         super().__init__()
         self.config = config
-        self.model = self.build_model()
+        if not skip_model_init:
+            self.model = self.build_model()
+        else:
+            self.model = None
 
         # text_transformer_args represents the args for the text transformer in the model.
         # It should be assigned in the actual model implementation, if any.
@@ -560,9 +565,10 @@ class Model(ABC, nn.Module):
 
 
 class TextOnlyModel(Model):
-    def __init__(self, config: ModelArgs) -> None:
-        super().__init__(config)
-        self.text_transformer_args = self.model.config
+    def __init__(self, config: ModelArgs, skip_model_init: bool = False) -> None:
+        super().__init__(config, skip_model_init)
+        if not skip_model_init:
+            self.text_transformer_args = self.model.config
 
     def forward(self, tokens: Tensor, input_pos: Optional[Tensor] = None) -> Tensor:
         return self.model(tokens, input_pos)
@@ -654,7 +660,7 @@ class Transformer(nn.Module):
             layers_per_stage * config.stage_idx,
             layers_per_stage * (config.stage_idx + 1),
         ):
-            self.layers[str(layer_id)] = TransformerBlock(config)
+            self.layers[str(layer_id)] = TransformerBlock(config, layer_id=layer_id)
 
         if config.stage_idx == config.n_stages - 1:
             self.norm = RMSNorm(config.dim, eps=config.norm_eps)
@@ -723,6 +729,8 @@ class Transformer(nn.Module):
 
     def forward(self, x: Tensor, input_pos: Optional[Tensor] = None, cache_lane: int = 0) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
+        if os.getenv('DEBUG_CACHE'):
+            print("Transformer forward input pos", input_pos)
         mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
         if self.tok_embeddings:
@@ -742,14 +750,13 @@ class Transformer(nn.Module):
         # For granite architectures
         if self.config.logits_scaling:
             x = x / self.config.logits_scaling
-        # print(f"output shape: {x.shape}")
         return x
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: TransformerArgs) -> None:
+    def __init__(self, config: TransformerArgs, layer_id: int = -1) -> None:
         super().__init__()
-        self.attention = Attention(config)
+        self.attention = Attention(config, layer_id=layer_id)
         self.feed_forward = FeedForward(config)
         self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
         self.attention_norm = RMSNorm(config.dim, config.norm_eps)
@@ -775,7 +782,7 @@ class TransformerBlock(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, config: TransformerArgs):
+    def __init__(self, config: TransformerArgs, layer_id: int = -1):
         super().__init__()
         assert config.dim % config.n_heads == 0
 
@@ -798,6 +805,7 @@ class Attention(nn.Module):
         self.n_local_heads = config.n_local_heads
         self.dim = config.dim
         self.attention_scale = config.attention_multiplier
+        self.layer_id = layer_id
         self._register_load_state_dict_pre_hook(self.load_hook)
 
     def setup_cache(self, max_batch_size, max_seq_length, cache_lanes: int = 1):
@@ -888,10 +896,8 @@ class Attention(nn.Module):
         k = apply_rotary_emb(k, freqs_cis)
 
         q, k, v = (x.transpose(1, 2) for x in (q, k, v))
-
         if self.kv_cache is not None:
             k, v = self.kv_cache[cache_lane].update(input_pos, k, v)
-
         k = k.repeat_interleave(self.n_heads // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_heads // self.n_local_heads, dim=1)
         y = F.scaled_dot_product_attention(
