@@ -732,7 +732,6 @@ class LocalGenerator:
             start_pos, prompt_length + start_pos, device=device, dtype=torch.int
         )
 
-        print(f"generate input_pos {input_pos}, start_pos {start_pos}, prompt_length {prompt_length}")
         prefill_t0 = time.perf_counter()
         next_token = self.prefill(
             model,
@@ -1176,7 +1175,6 @@ class LocalGenerator:
             num_tokens_generated = 0
             local_token_tensor = []
             with prof:
-                print(f"Generate start_pos {start_pos}")
                 generator_func = self.generate(
                     self.model,
                     encoded,

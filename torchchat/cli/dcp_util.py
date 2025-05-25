@@ -13,8 +13,9 @@ from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
 from torch.distributed.checkpoint.stateful import Stateful
 from torchtitan.models import model_name_to_cls, models_config
-from torchtitan.models.llama import ModelArgs, llama3_configs
-from torchtitan.parallelisms import ParallelDims, models_parallelize_fns
+from torchtitan.models.llama import TransformerModelArgs as ModelArgs, llama3_configs
+from torchtitan.parallelisms import ParallelDims
+from torchtitan.models.llama.parallelize_llama import parallelize_llama
 from torchtitan.utils import device_type, get_device_info, set_determinism
 from torchchat.model import Transformer as TorchchatTransformer, TextOnlyModel, ModelArgs as TorchchatModelArgs
 
@@ -64,17 +65,19 @@ def load_dcp_checkpoint(config: ModelArgs, checkpoint_path: str):
     job_config.checkpoint.enable_checkpoint = True
     job_config.checkpoint.folder = 'checkpoint'
     job_config.job.dump_folder = str(dump_folder)
+    job_config.checkpoint.use_tensor_preload = False
 
     # Initialize the model using TorchTitan's approach
     model_config = llama3_configs["3B"]  # You can adjust the size as needed
     model_config.norm_type = "rmsnorm"
     model_config.vocab_size = config.vocab_size
-    model_config.max_seq_len = config.max_seq_length or 2048
+    model_config.max_seq_len = config.max_seq_length or 8192
 
     # Convert ModelArgs to TransformerArgs
     transformer_args = convert_model_args_to_transformer_args(model_config)
     with torch.device("meta"):
         model = TorchchatTransformer(transformer_args)
+        model = model.to(dtype=torch.bfloat16)
 
     # Initialize ParallelDims
     world_size = dist.get_world_size()
@@ -92,8 +95,7 @@ def load_dcp_checkpoint(config: ModelArgs, checkpoint_path: str):
     world_mesh = parallel_dims.build_mesh(device_type)
 
     # Apply parallelism
-    parallelize_fn = models_parallelize_fns["llama3"]
-    parallelize_fn(model, world_mesh, parallel_dims, job_config)
+    parallelize_llama(model, world_mesh, parallel_dims, job_config)
 
     # Move the model to the appropriate device
     model = model.to_empty(device=device)

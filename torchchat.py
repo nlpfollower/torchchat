@@ -34,7 +34,7 @@ def signal_handler(sig, frame):
 
 
 if __name__ == "__main__":
-    pydevd_pycharm.settrace('localhost', port=6790, stdoutToServer=True, stderrToServer=True)
+    # pydevd_pycharm.settrace('localhost', port=6790, stdoutToServer=True, stderrToServer=True)
 
     # Set the signal handler for SIGINT
     signal.signal(signal.SIGINT, signal_handler)
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     # Now parse the arguments
     args = parser.parse_args()
 
-    # Don't initialize for Inventory management subcommands
+    # Don't initialize or Inventory management subcommands
     # TODO: Remove when arg_init is refactored
     if args.command not in INVENTORY_VERBS:
         args = arg_init(args)
