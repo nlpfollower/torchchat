@@ -39,7 +39,18 @@ def convert_model_args_to_transformer_args(config: ModelArgs) -> TransformerArgs
         rope_scaling=None,  # Assuming no rope scaling for now
     )
 
-def load_dcp_checkpoint(config: ModelArgs, checkpoint_path: str):
+
+def load_dcp_checkpoint(config: ModelArgs, checkpoint_path: str, checkpoint_folder: str = "checkpoint",
+                        model_size: str = "3B"):
+    """
+    Load a distributed checkpoint.
+
+    Args:
+        config: Model configuration
+        checkpoint_path: Path to the checkpoint
+        checkpoint_folder: Name of the checkpoint folder (default: "checkpoint")
+        model_size: Model size to use from llama3_configs (default: "3B")
+    """
     job_config = JobConfig()
     job_config.parse_args([])
 
@@ -63,12 +74,18 @@ def load_dcp_checkpoint(config: ModelArgs, checkpoint_path: str):
     dump_folder = checkpoint_dir.parent.parent
 
     job_config.checkpoint.enable_checkpoint = True
-    job_config.checkpoint.folder = 'checkpoint'
+    job_config.checkpoint.folder = checkpoint_folder
     job_config.job.dump_folder = str(dump_folder)
     job_config.checkpoint.use_tensor_preload = False
+    print(f"checkpoint.folder: ${job_config.checkpoint.folder}")
+    print(f"dump folder: ${job_config.job.dump_folder}")
 
     # Initialize the model using TorchTitan's approach
-    model_config = llama3_configs["3B"]  # You can adjust the size as needed
+    if model_size not in llama3_configs:
+        raise ValueError(
+            f"Model size '{model_size}' not found in llama3_configs. Available sizes: {list(llama3_configs.keys())}")
+
+    model_config = llama3_configs[model_size]
     model_config.norm_type = "rmsnorm"
     model_config.vocab_size = config.vocab_size
     model_config.max_seq_len = config.max_seq_length or 8192

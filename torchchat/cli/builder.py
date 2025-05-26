@@ -50,6 +50,8 @@ from torchtune.training import set_default_dtype
 class BuilderArgs:
     checkpoint_path: Optional[Union[Path, str]] = None
     checkpoint_dir: Optional[Union[Path, str]] = None
+    checkpoint_folder: str = "checkpoint"
+    dcp_model_size: str = "3B"
     dcp_dir: Optional[Union[Path, str]] = None
     params_path: Optional[Union[Path, str]] = None
     params_table: Optional[str] = None
@@ -117,6 +119,8 @@ class BuilderArgs:
         if hasattr(args, "dcp_dir"):
             dcp_dir = args.dcp_dir
 
+        checkpoint_folder = getattr(args, "checkpoint_folder", "checkpoint")
+        dcp_model_size = getattr(args, "dcp_model_size", "3B")
         checkpoint_path = args.checkpoint_path
         params_table = args.params_table
         distribution_path = None
@@ -185,6 +189,8 @@ class BuilderArgs:
             checkpoint_dir=checkpoint_dir,
             checkpoint_path=checkpoint_path,
             dcp_dir=dcp_dir,
+            checkpoint_folder=checkpoint_folder,
+            dcp_model_size=dcp_model_size,
             params_path=args.params_path,
             params_table=params_table,
             gguf_path=args.gguf_path,
@@ -490,7 +496,17 @@ def _load_model(builder_args: BuilderArgs) -> Model:
                   else ModelArgs.from_table(builder_args.params_table))
         config.vocab_size = builder_args.vocab_size
         config.max_seq_length = builder_args.max_seq_length
-        model = load_dcp_checkpoint(config, builder_args.dcp_dir)
+
+        # Add these parameters - you can make them configurable through BuilderArgs
+        checkpoint_folder = getattr(builder_args, 'checkpoint_folder', 'checkpoint')
+        model_size = getattr(builder_args, 'dcp_model_size', '3B')
+
+        model = load_dcp_checkpoint(
+            config,
+            builder_args.dcp_dir,
+            checkpoint_folder=checkpoint_folder,
+            model_size=model_size
+        )
         return model.eval()
     else:
         model = _load_model_default(builder_args)

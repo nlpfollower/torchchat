@@ -199,4 +199,4 @@ def main(args):
 
     atexit.register(shutdown_worker)
 
-    app.run()
+    app.run(host='0.0.0.0')

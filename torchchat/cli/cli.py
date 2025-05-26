@@ -132,6 +132,20 @@ def _add_model_specification_args(parser) -> None:
         default=None,
         help="Use the specified model checkpoint directory",
     )
+    model_specification_parser.add_argument(
+        "--checkpoint-folder",
+        type=str,
+        default="checkpoint",
+        help="Checkpoint folder name for DCP loading (default: checkpoint)"
+    )
+
+    model_specification_parser.add_argument(
+        "--dcp-model-size",
+        type=str,
+        default="3B",
+        choices=["70B", "30B", "8B", "3B", "1B", "405B"],  # Add available sizes
+        help="Model size to use when loading DCP checkpoints (default: 3B)"
+    )
 
     _add_custom_model_args(model_specification_parser)
     exclusive_parser.add_argument(
