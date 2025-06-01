@@ -80,6 +80,8 @@ def add_arguments_for_verb(parser, verb: str) -> None:
     if verb in GENERATION_VERBS:
         _add_exported_input_path_args(parser)
         _add_generation_args(parser, verb)
+    if verb == "server":
+        _add_server_args(parser)
     if verb == "export":
         _add_export_output_path_args(parser)
         _add_export_args(parser)
@@ -96,6 +98,19 @@ def add_arguments_for_verb(parser, verb: str) -> None:
     # WIP Features (suppressed from --help)
     _add_distributed_args(parser)
     _add_speculative_execution_args(parser)
+
+
+# Add CLI Args specific to server command
+def _add_server_args(parser) -> None:
+    server_parser = parser.add_argument_group(
+        "Server Configuration", "Options for the inference server"
+    )
+    server_parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="Port to run the inference server on (default: 5000)",
+    )
 
 
 # Add CLI Args related to model specification (what base model to use)

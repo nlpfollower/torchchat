@@ -46,7 +46,7 @@ def run_worker(
     This function creates and executes a generator 
     """
     gen = initialize_generator(args)
-    
+
     while True:
         try:
             req = queue.get()
@@ -55,9 +55,10 @@ def run_worker(
 
         if req == "stop":
             break
-        
+
         for _ in gen.chunked_completion(req):
             pass
+
 
 def create_app(args):  # noqa: C901
     """
@@ -72,7 +73,7 @@ def create_app(args):  # noqa: C901
         world_size = builder_args.tp * builder_args.pp
         mp_context = mp.get_context('spawn')
         queue = mp_context.Queue()
-    
+
         for i in range(1, world_size):
             fn = partial(run_worker, args, i, queue)
             mp_context = mp.get_context('spawn')
@@ -95,6 +96,29 @@ def create_app(args):  # noqa: C901
         elif type(d) is list:
             return [_del_none(v) for v in d if v]
         return d
+
+    @app.route("/health", methods=["GET"])
+    def health_check():
+        """
+        Health check endpoint to verify server is running and ready.
+        """
+        try:
+            # Check if model is loaded
+            if gen is None:
+                return json.dumps({"status": "unhealthy", "reason": "model not loaded"}), 503
+
+            return json.dumps({
+                "status": "healthy",
+                "model": args.model if hasattr(args, 'model') else "unknown",
+                "distributed": False,
+                "ready": True
+            }), 200
+
+        except Exception as e:
+            return json.dumps({
+                "status": "unhealthy",
+                "reason": str(e)
+            }), 503
 
     @app.route(f"/{OPENAI_API_VERSION}/chat/completions", methods=["POST"])
     def chat_endpoint():
@@ -121,7 +145,7 @@ def create_app(args):  # noqa: C901
         if req.stream:
 
             if builder_args.distributed:
-                for _ in range(world_size-1):
+                for _ in range(world_size - 1):
                     queue.put(req)
 
             def chunk_processor(chunked_completion_generator):
@@ -142,7 +166,7 @@ def create_app(args):  # noqa: C901
             return resp
         else:
             if builder_args.distributed:
-                for _ in range(world_size-1):
+                for _ in range(world_size - 1):
                     queue.put(req)
 
             response = gen.sync_completion(req)
@@ -199,4 +223,6 @@ def main(args):
 
     atexit.register(shutdown_worker)
 
-    app.run(host='0.0.0.0')
+    # Use the port from args
+    port = args.port
+    app.run(host='0.0.0.0', port=port)
