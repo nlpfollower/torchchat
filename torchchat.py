@@ -35,6 +35,13 @@ def signal_handler(sig, frame):
 
 if __name__ == "__main__":
     # pydevd_pycharm.settrace('localhost', port=6790, stdoutToServer=True, stderrToServer=True)
+    rank = int(os.environ.get("RANK"))
+    if rank == 0:
+        print("Hello from rank 0")
+        pydevd_pycharm.settrace('localhost', port=6791, stdoutToServer=True, stderrToServer=True)
+    if rank == 1:
+        print("Hello from rank 0")
+        pydevd_pycharm.settrace('localhost', port=6792, stdoutToServer=True, stderrToServer=True)
 
     # Set the signal handler for SIGINT
     signal.signal(signal.SIGINT, signal_handler)

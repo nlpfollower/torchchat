@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from os import PathLike
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, Callable
 
 import torch
 import torch._dynamo.config
@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 class NoOpLogger:
     def __no_op(self, *_, **__):
         pass
+
     def __getattr__(self, name):
         return self.__no_op
 
@@ -67,10 +68,10 @@ logger = (
     else logging.getLogger(__name__)
 )
 
+
 ## Chat Formatters #############################################################
 
 class _ChatFormatter(ABC):
-
     # Messages can arrive as a standard dict with "role" and "content" as
     # strings, or where "content" is a list of objects with "text" fields.
     MESSAGE_TYPE = Dict[str, Union[str, List[Dict[str, str]]]]
@@ -83,9 +84,9 @@ class _ChatFormatter(ABC):
 
     @abstractmethod
     def encode_dialog_prompt(
-        self,
-        dialog: DIALOG_TYPE,
-        add_generation_prompt: bool = True,
+            self,
+            dialog: DIALOG_TYPE,
+            add_generation_prompt: bool = True,
     ) -> List[int]:
         """Encode a sequence of messages into a sequence of token IDs, including
         the chat template
@@ -134,9 +135,9 @@ class Llama3ChatFormatter(_ChatFormatter):
         return tokens
 
     def encode_dialog_prompt(
-        self,
-        dialog: _ChatFormatter.DIALOG_TYPE,
-        add_generation_prompt: bool = True,
+            self,
+            dialog: _ChatFormatter.DIALOG_TYPE,
+            add_generation_prompt: bool = True,
     ) -> List[int]:
         tokens = []
         tokens.append(self.tokenizer.special_tokens["<|begin_of_text|>"])
@@ -144,7 +145,7 @@ class Llama3ChatFormatter(_ChatFormatter):
             tokens.extend(self._encode_message(message))
         # Add the start of an assistant message for the model to complete.
         if add_generation_prompt and dialog and dialog[-1]["role"] != "assistant":
-            tokens.extend(self._encode_header("assistant")) # Pass role directly as a string
+            tokens.extend(self._encode_header("assistant"))  # Pass role directly as a string
         return tokens
 
 
@@ -164,9 +165,9 @@ class Llama2ChatFormatter(_ChatFormatter):
         return message["content"]
 
     def encode_dialog_prompt(
-        self,
-        dialog: _ChatFormatter.DIALOG_TYPE,
-        add_generation_prompt: bool = True, # UNUSED
+            self,
+            dialog: _ChatFormatter.DIALOG_TYPE,
+            add_generation_prompt: bool = True,  # UNUSED
     ) -> List[int]:
         new_turn = True
         tokens = []
@@ -189,21 +190,22 @@ class Llama2ChatFormatter(_ChatFormatter):
         return tokens
 
 
-
 class HFTokenizerChatFormatter(_ChatFormatter):
     """Chat formatter that uses the built-in formatting capabilities of an HF
     tokenizer instance
     """
+
     def encode_dialog_prompt(
-        self,
-        dialog: _ChatFormatter.DIALOG_TYPE,
-        add_generation_prompt: bool = True,
+            self,
+            dialog: _ChatFormatter.DIALOG_TYPE,
+            add_generation_prompt: bool = True,
     ) -> List[int]:
         rendered = self.tokenizer.apply_chat_template(
             dialog, add_generation_prompt=add_generation_prompt
         )
         logger.debug("Formatted chat prompt:\n%s", rendered)
         return self.tokenizer.encode(rendered)
+
 
 ## Generation ##################################################################
 
@@ -235,7 +237,7 @@ class GeneratorArgs:
             raise RuntimeError("prefill compilation requires parallel prefill")
 
     def validate_build(
-        self, builder_args: BuilderArgs, model_description: str = "model"
+            self, builder_args: BuilderArgs, model_description: str = "model"
     ):
         reason = ""
         model_type = ""
@@ -262,7 +264,7 @@ class GeneratorArgs:
         pte_path = getattr(args, "pte_path", None)
         aoti_package_path = getattr(args, "aoti_package_path", None)
         sequential_prefill = (
-            args.sequential_prefill or bool(aoti_package_path) or bool(pte_path) or bool(dso_path)
+                args.sequential_prefill or bool(aoti_package_path) or bool(pte_path) or bool(dso_path)
         )
 
         # Validate that all image prompts exist before expensive model load
@@ -310,17 +312,17 @@ class LocalGenerator:
     """
 
     def __init__(
-        self,
-        builder_args: BuilderArgs,
-        speculative_builder_args: BuilderArgs,
-        tokenizer_args: TokenizerArgs,
-        generator_args: GeneratorArgs,
-        profile: Optional[Path],
-        quantize: bool,
-        draft_quantize: bool,
+            self,
+            builder_args: BuilderArgs,
+            speculative_builder_args: BuilderArgs,
+            tokenizer_args: TokenizerArgs,
+            generator_args: GeneratorArgs,
+            profile: Optional[Path],
+            quantize: bool,
+            draft_quantize: bool,
     ):
         torch._inductor.config.coordinate_descent_tuning = (
-            builder_args.device != "cpu"
+                builder_args.device != "cpu"
         )
         torch._inductor.config.triton.unique_kernel_names = True
         torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
@@ -333,7 +335,7 @@ class LocalGenerator:
         self.draft_quantize = draft_quantize
         self.is_torchtune_model = generator_args.is_torchtune_model
         self.dtype = builder_args.precision
-        self.get_user_input : Callable = input
+        self.get_user_input: Callable = input
 
         self.rank: Optional[int] = None
 
@@ -401,14 +403,14 @@ class LocalGenerator:
         generator_args.validate_build(self.speculative_builder_args, "draft model")
 
     def multinomial_sample_one_no_sync(
-        self,
-        probs_sort,
+            self,
+            probs_sort,
     ):  # Does multinomial sampling without a cuda synchronization
         q = torch.empty_like(probs_sort).exponential_(1)
         return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
 
     def logits_to_probs(
-        self, logits, temperature: float = 1.0, top_k: Optional[int] = None
+            self, logits, temperature: float = 1.0, top_k: Optional[int] = None
     ):
         logits = logits / max(
             temperature, 1e-5 if logits.dtype != torch.float16 else 1e-3
@@ -422,11 +424,11 @@ class LocalGenerator:
         return probs
 
     def sample(
-        self,
-        logits,
-        need_probs: bool,
-        temperature: float = 0,
-        top_k: Optional[int] = None,
+            self,
+            logits,
+            need_probs: bool,
+            temperature: float = 0,
+            top_k: Optional[int] = None,
     ):
         logits = logits[0, -1]
         logger.debug("Logits: %s", logits)
@@ -438,14 +440,14 @@ class LocalGenerator:
         return idx_next, probs
 
     def prefill(
-        self,
-        model: Model,
-        x: torch.Tensor,
-        input_pos: torch.Tensor,
-        batch: Optional[Dict[str, Any]] = None,  # Inputs for multimodal models
-        *,
-        sequential_prefill=True,
-        **sampling_kwargs,
+            self,
+            model: Model,
+            x: torch.Tensor,
+            input_pos: torch.Tensor,
+            batch: Optional[Dict[str, Any]] = None,  # Inputs for multimodal models
+            *,
+            sequential_prefill=True,
+            **sampling_kwargs,
     ) -> torch.Tensor:
         logger.debug("x: %s, input_pos: %s", x, input_pos)
         width = x.size(1)
@@ -492,13 +494,13 @@ class LocalGenerator:
         return self.sample(logits, need_probs=False, **sampling_kwargs)[0]
 
     def decode_one_token(
-        self,
-        model: Model,
-        x: torch.Tensor,
-        input_pos: torch.Tensor,
-        need_probs: bool,
-        batch: Optional[Dict[str, Any]] = None,  # Inputs for multimodal models
-        **sampling_kwargs,
+            self,
+            model: Model,
+            x: torch.Tensor,
+            input_pos: torch.Tensor,
+            need_probs: bool,
+            batch: Optional[Dict[str, Any]] = None,  # Inputs for multimodal models
+            **sampling_kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         # input_pos: [B, 1]
         assert input_pos.shape[-1] == 1
@@ -521,27 +523,34 @@ class LocalGenerator:
     """
 
     def decode_n_tokens(
-        self,
-        model: Model,
-        cur_token: torch.Tensor,
-        input_pos: torch.Tensor,
-        num_new_tokens: int,
-        need_probs: bool,
-        batch=Optional[Dict[str, Any]],  # Inputs for multimodal models
-        callback=lambda _: _,
-        eos_token_id: int = 2,
-        eot_id: Optional[int] = None,
-        **sampling_kwargs,
+            self,
+            model: Model,
+            cur_token: torch.Tensor,
+            input_pos: torch.Tensor,
+            num_new_tokens: int,
+            need_probs: bool,
+            batch=Optional[Dict[str, Any]],
+            callback=lambda _: _,
+            eos_token_id: int = 2,
+            eot_id: Optional[int] = None,
+            **sampling_kwargs,
     ):
         new_tokens, new_probs = [], []
         encountered_eos = False
-        for _i in range(
-            num_new_tokens - 1
-        ):  # -1 to save space to run an EoS if dont generate it naturally
-            # Actually better for Inductor to codegen attention here
-            with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
 
+        # Add debug logging
+        if hasattr(self, 'pp_rank'):
+            print(
+                f"[Rank {self.pp_rank}] Starting decode_n_tokens with cur_token: {cur_token}, shape: {cur_token.shape}")
+
+        for i in range(num_new_tokens - 1):
+            with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
                 out_token = cur_token.clone()
+
+                # Debug log before decode
+                if hasattr(self, 'pp_rank') and i < 5:  # Only log first 5 tokens
+                    print(f"[Rank {self.pp_rank}] Iteration {i}: Calling decode_one_token with token {out_token}")
+
                 next_token, next_prob = self.decode_one_token(
                     model,
                     out_token,
@@ -550,19 +559,31 @@ class LocalGenerator:
                     need_probs=need_probs,
                     **sampling_kwargs,
                 )
+
+                # Debug log after decode
+                if hasattr(self, 'pp_rank') and i < 5:
+                    print(
+                        f"[Rank {self.pp_rank}] Iteration {i}: Got next_token {next_token}, shape: {next_token.shape}")
+                    if hasattr(self, 'tokenizer') and next_token.numel() == 1:
+                        token_str = self.tokenizer.decode([next_token.item()])
+                        print(f"[Rank {self.pp_rank}] Decoded token: '{token_str}'")
+
                 input_pos += 1
                 new_tokens.append(next_token.clone())
-                callback(new_tokens[-1], done_generating=_i == num_new_tokens - 2)
+                callback(new_tokens[-1], done_generating=i == num_new_tokens - 2)
+
                 if need_probs or next_prob is None:
                     yield out_token, None
                 else:
                     new_probs.append(next_prob.clone())
                     yield out_token, next_prob.clone()
-                cur_token = next_token
 
-                # encountered eos
+                # Update cur_token for next iteration
+                cur_token = next_token.view(-1)  # Ensure it's 1D
+
+                # Check for EOS
                 if next_token.item() == eos_token_id or (
-                    eot_id is not None and next_token.item() == eot_id
+                        eot_id is not None and next_token.item() == eot_id
                 ):
                     encountered_eos = True
                     final_token, next_prob = self.decode_one_token(
@@ -574,8 +595,6 @@ class LocalGenerator:
                         **sampling_kwargs,
                     )
                     input_pos += 1
-                    if os.getenv('DEBUG_CACHE'):
-                        print(f"final token input_pos: {input_pos}")
                     yield cur_token.clone(), next_prob.clone()
                     break
 
@@ -586,9 +605,9 @@ class LocalGenerator:
                 device=cur_token.device,
             )
             new_tokens.append(eos_token.clone())
-            eos_token, next_prob = self.decode_one_token(
+            eos_token_out, next_prob = self.decode_one_token(
                 model,
-                eos_token.view(1, -1),
+                eos_token.view(-1),  # Ensure 1D
                 input_pos,
                 need_probs,
                 batch=batch,
@@ -603,14 +622,14 @@ class LocalGenerator:
         return model(x, input_pos)
 
     def speculative_decode(
-        self,
-        model: Model,
-        draft_model: Model,
-        cur_token: torch.Tensor,
-        input_pos: int,
-        speculate_k: int,
-        batch: Optional[Dict[str, Any]] = None,  # Inputs for multimodal models
-        **sampling_kwargs,
+            self,
+            model: Model,
+            draft_model: Model,
+            cur_token: torch.Tensor,
+            input_pos: int,
+            speculate_k: int,
+            batch: Optional[Dict[str, Any]] = None,  # Inputs for multimodal models
+            **sampling_kwargs,
     ) -> torch.Tensor:
         # draft model inference sequentially
         device = cur_token.device
@@ -645,7 +664,7 @@ class LocalGenerator:
         q = target_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
         accept_draft_prob = torch.minimum(torch.ones(()), q[:speculate_k] / p)
         rejected_locations = (
-            torch.rand_like(accept_draft_prob) > accept_draft_prob
+                torch.rand_like(accept_draft_prob) > accept_draft_prob
         ).nonzero()
 
         if rejected_locations.shape[0] == 0:  # All draft tokens have been accepted
@@ -670,24 +689,24 @@ class LocalGenerator:
 
     @torch.no_grad()
     def generate(
-        self,
-        model: Model,
-        prompt: torch.Tensor,
-        max_new_tokens: int,
-        *,
-        chat_mode: bool,
-        batch: Optional[
-            Dict[str, Any]
-        ] = None,  # List of Image prompt tensors for multimodal models
-        start_pos: int = 0,
-        skip_cache_setup: bool = False,
-        draft_model: Model,
-        speculate_k: Optional[int] = 8,
-        sequential_prefill=True,
-        callback=lambda x: x,
-        max_seq_length: int,
-        seed: Optional[int] = None,
-        **sampling_kwargs,
+            self,
+            model: Model,
+            prompt: torch.Tensor,
+            max_new_tokens: int,
+            *,
+            chat_mode: bool,
+            batch: Optional[
+                Dict[str, Any]
+            ] = None,  # List of Image prompt tensors for multimodal models
+            start_pos: int = 0,
+            skip_cache_setup: bool = False,
+            draft_model: Model,
+            speculate_k: Optional[int] = 8,
+            sequential_prefill=True,
+            callback=lambda x: x,
+            max_seq_length: int,
+            seed: Optional[int] = None,
+            **sampling_kwargs,
     ) -> torch.Tensor:
         """
         Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
@@ -708,8 +727,8 @@ class LocalGenerator:
                 model = model.to(device=device)
                 with torch.device(device):
                     if (
-                        self.is_torchtune_model
-                        or self.model.config.model_type == ModelType.Flamingo
+                            self.is_torchtune_model
+                            or self.model.config.model_type == ModelType.Flamingo
                     ):
                         # 6404 is one-gpu affordable max_seq_length for single image input
                         model.setup_caches(
@@ -759,7 +778,7 @@ class LocalGenerator:
             [start_pos + prompt_length], device=device, dtype=torch.int
         )
         accept_counts = [0] * (
-            speculate_k + 1
+                speculate_k + 1
         )  # creates array of [0, 0, 0, ...] that is speculate_k + 1 long
 
         if is_speculative:
@@ -781,7 +800,7 @@ class LocalGenerator:
 
                 accept_counts[len(next_tokens) - 1] += 1
                 num_added = min(max_new_tokens - input_pos - 1, len(next_tokens))
-                for token in next_tokens[:num_added,]:
+                for token in next_tokens[:num_added, ]:
                     callback(token)
                     yield token, None
                 input_pos = input_pos + num_added
@@ -789,20 +808,20 @@ class LocalGenerator:
         else:
             generated_tokens = []
             for generated_token, _ in self.decode_n_tokens(
-                model,
-                next_token,
-                input_pos,
-                max_new_tokens - 1,
-                batch=batch,
-                callback=callback,
-                need_probs=False,
-                eos_token_id=self.tokenizer.eos_id() if self.tokenizer else 2,
-                eot_id=(
-                    self.tokenizer.special_tokens["<|eot_id|>"]
-                    if self.is_llama3_model
-                    else None
-                ),
-                **sampling_kwargs,
+                    model,
+                    next_token,
+                    input_pos,
+                    max_new_tokens - 1,
+                    batch=batch,
+                    callback=callback,
+                    need_probs=False,
+                    eos_token_id=self.tokenizer.eos_id() if self.tokenizer else 2,
+                    eot_id=(
+                            self.tokenizer.special_tokens["<|eot_id|>"]
+                            if self.is_llama3_model
+                            else None
+                    ),
+                    **sampling_kwargs,
             ):
                 generated_tokens.append(generated_token.view(-1))
                 yield generated_token, None
@@ -829,8 +848,8 @@ class LocalGenerator:
         if x.item() == self.tokenizer.eos_id():
             done_generating = True
         if (
-            self.is_llama3_model
-            and x.item() == self.tokenizer.special_tokens["<|eot_id|>"]
+                self.is_llama3_model
+                and x.item() == self.tokenizer.special_tokens["<|eot_id|>"]
         ):
             done_generating = True
             buffer = buffer[:-1]  # drop the eot_id from the output buffer
@@ -839,11 +858,11 @@ class LocalGenerator:
             buffer.clear()
 
     def _gen_model_input(
-        self,
-        prompt: Union[str | List[Any]],
-        image_prompts: Optional[List[str | Image.Image]] = None,
-        max_new_tokens: Optional[int] = None,
-        max_seq_len: Optional[int] = 2048,
+            self,
+            prompt: Union[str | List[Any]],
+            image_prompts: Optional[List[str | Image.Image]] = None,
+            max_new_tokens: Optional[int] = None,
+            max_seq_len: Optional[int] = 2048,
     ) -> Tuple[torch.Tensor, Optional[Dict[str, Any]]]:
         """
         Convert prompt and image prompts into consumable model input args.
@@ -879,7 +898,7 @@ class LocalGenerator:
 
         # Llama 3.2 11B
         assert (
-            image_prompts is None or len(image_prompts) == 1
+                image_prompts is None or len(image_prompts) == 1
         ), "At most one image is supported at the moment"
 
         if image_prompts and isinstance(image_prompts[0], str):
@@ -888,7 +907,7 @@ class LocalGenerator:
             images = None
 
         assert (
-            max_new_tokens is not None
+                max_new_tokens is not None
         ), "max_new_tokens must be specified for Flamingo models"
 
         # Wrap string prompts into a list
@@ -920,7 +939,7 @@ class LocalGenerator:
                         prompt_arg = content_dict["text"]
                     elif content_dict["type"] == "image_url":
                         assert (
-                            images is None
+                                images is None
                         ), "At most one image is supported at the moment"
 
                         base64_decoded = base64.b64decode(
@@ -993,8 +1012,8 @@ class LocalGenerator:
         return encoded, batch
 
     def chat(
-        self,
-        generator_args: GeneratorArgs,
+            self,
+            generator_args: GeneratorArgs,
     ):
         if generator_args.chat_mode:
             print("Starting Interactive Chat")
@@ -1036,7 +1055,7 @@ class LocalGenerator:
                 decoder = self.model.model.decoder
                 for m in reversed(list(decoder.modules())):
                     if isinstance(m, TransformerSelfAttentionLayer) or isinstance(
-                        m, TransformerCrossAttentionLayer
+                            m, TransformerCrossAttentionLayer
                     ):
                         m.compile()
             else:
@@ -1080,8 +1099,8 @@ class LocalGenerator:
         # torchtune models (i.e. Flamingo)
         # See Issue: https://github.com/pytorch/torchchat/issues/1273
         elif (
-            not generator_args.is_torchtune_model
-            and self.model.config.model_type != ModelType.Flamingo
+                not generator_args.is_torchtune_model
+                and self.model.config.model_type != ModelType.Flamingo
         ):
             max_seq_length = min(
                 encoded.size(0) + generator_args.max_new_tokens,
@@ -1204,7 +1223,7 @@ class LocalGenerator:
                         aggregate_metrics.update(metrics)
                     yield token_tensor, metrics
             jit_compile = is_first_sample and (
-                generator_args.compile or generator_args.compile_prefill
+                    generator_args.compile or generator_args.compile_prefill
             )
             if os.getenv('DEBUG_CACHE'):
                 print(f"local_token_tensor: {local_token_tensor}")
@@ -1228,7 +1247,7 @@ class LocalGenerator:
             tokens_sec = (num_tokens_generated + 1) / t
             first_token_sec = 1 / aggregate_metrics.get("time_to_first_token", 0)
             next_tokens_sec = num_tokens_generated / (
-                t - aggregate_metrics.get("time_to_first_token", 0)
+                    t - aggregate_metrics.get("time_to_first_token", 0)
             )
 
             if jit_compile:
@@ -1274,7 +1293,7 @@ with {'sequential' if generator_args.sequential_prefill else 'parallel'} prefill
             acceptance_probs = [i / sum(counts_aggregated) for i in counts_aggregated]
             print(f"Acceptance probs: {acceptance_probs}")
             print(
-                f"Mean Accepted: {sum([idx * i for idx, i in enumerate(counts_aggregated)])/sum(counts_aggregated)}"
+                f"Mean Accepted: {sum([idx * i for idx, i in enumerate(counts_aggregated)]) / sum(counts_aggregated)}"
             )
 
         avg_tokens_sec = torch.mean(
@@ -1288,9 +1307,9 @@ with {'sequential' if generator_args.sequential_prefill else 'parallel'} prefill
         ).item()
 
         if not (
-            torch.isnan(torch.tensor(avg_tokens_sec))
-            or torch.isnan(torch.tensor(avg_first_token_sec))
-            or torch.isnan(torch.tensor(avg_next_tokens_sec))
+                torch.isnan(torch.tensor(avg_tokens_sec))
+                or torch.isnan(torch.tensor(avg_first_token_sec))
+                or torch.isnan(torch.tensor(avg_next_tokens_sec))
         ):
             print(
                 f"\nWarning: Excluding compile in calculations \
@@ -1305,18 +1324,39 @@ with {'sequential' if generator_args.sequential_prefill else 'parallel'} prefill
 
 class DistributedGenerator(LocalGenerator):
     def __init__(
-        self,
-        builder_args: BuilderArgs,
-        speculative_builder_args: BuilderArgs,
-        tokenizer_args: TokenizerArgs,
-        generator_args: GeneratorArgs,
-        profile: Optional[Path],
-        quantize: bool,
-        draft_quantize: bool,
-        ):
-        
+            self,
+            builder_args: BuilderArgs,
+            speculative_builder_args: BuilderArgs,
+            tokenizer_args: TokenizerArgs,
+            generator_args: GeneratorArgs,
+            profile: Optional[Path],
+            quantize: bool,
+            draft_quantize: bool,
+    ):
+
         is_speculative = speculative_builder_args.checkpoint_path is not None
         assert is_speculative == False, "Distributed inference with pp > 1 does not support speculative inference yet."
+
+        # Initialize distributed attributes first
+        if dist.is_initialized():
+            self.rank = dist.get_rank()
+            # Use LOCAL_RANK if available (set by torchrun), otherwise calculate it
+            local_rank = int(os.environ.get("LOCAL_RANK", self.rank % torch.cuda.device_count()))
+            self.device = torch.device(f"cuda:{local_rank}")
+
+            # Override builder_args device to ensure consistent device usage
+            builder_args.device = f"cuda:{local_rank}"
+
+            # Set CUDA device for this process
+            torch.cuda.set_device(self.device)
+
+            print(f"DistributedGenerator: Rank {self.rank} using device: {self.device}")
+        else:
+            # If not distributed, set default device
+            self.rank = 0
+            self.device = torch.device(builder_args.device if builder_args.device else "cuda")
+
+        # Call parent init
         super().__init__(
             builder_args,
             speculative_builder_args,
@@ -1326,23 +1366,59 @@ class DistributedGenerator(LocalGenerator):
             quantize,
             draft_quantize,
         )
-        self.rank = dist.get_rank()
-        # Assuming same number of GPUs per node
-        self.device = torch.device(f"cuda:{self.rank % torch.cuda.device_count()}")
 
         def distributed_input(prompt: str) -> str:
             if dist.get_rank() == 0:
                 text = [input(prompt)]
             else:
                 text = [None]
-            
+
             dist.broadcast_object_list(text)
             return text[0]
 
         self.get_user_input: Callable = distributed_input
 
         if builder_args.pp > 1:
-            self.seqlen_prefill = 1024  # sequence length for prefill stage
+            # Get the actual max sequence length from the model config
+            text_transformer_args = self.model.text_transformer_args
+            max_seq_length = (
+                text_transformer_args.max_seq_length if text_transformer_args else 2048
+            )
+
+            # Use the actual max_seq_length for pipeline stages
+            self.seqlen_prefill = max_seq_length
+
+            # IMPORTANT: Ensure model's freqs_cis is large enough for pipeline parallelism
+            if hasattr(self.model, 'freqs_cis'):
+                current_size = self.model.freqs_cis.shape[0]
+                print(f"Current freqs_cis size: {current_size}")
+
+                # We need at least seqlen_prefill size
+                if current_size < self.seqlen_prefill:
+                    print(f"Extending freqs_cis from {current_size} to {self.seqlen_prefill}")
+
+                    # Recreate freqs_cis with larger size
+                    # This is model-specific, but most transformer models use this pattern
+                    if hasattr(self.model, 'config'):
+                        from torchchat.model import precompute_freqs_cis
+
+                        # Get the necessary parameters
+                        dim = self.model.config.dim
+                        n_heads = self.model.config.n_heads
+                        head_dim = dim // n_heads
+                        rope_base = getattr(self.model.config, 'rope_base', 10000.0)
+
+                        # Create new freqs_cis with larger size
+                        new_freqs_cis = precompute_freqs_cis(
+                            self.seqlen_prefill * 2,  # 2x for safety
+                            head_dim,
+                            rope_base,
+                            self.device,
+                        )
+
+                        # Replace the buffer
+                        self.model.register_buffer('freqs_cis', new_freqs_cis, persistent=True)
+                        print(f"New freqs_cis size: {self.model.freqs_cis.shape[0]}")
 
             logger.warn(f"{color.yellow}Pipeline parallelism is still experimental and might be slow{color.reset}")
             pp_mesh = self.model.device_mesh["pp"]
@@ -1356,18 +1432,22 @@ class DistributedGenerator(LocalGenerator):
             self.first_pp_rank = 0
             self.last_pp_rank = self.pp_degree - 1
 
-
             self.first_pp_rank_global_id = dist.get_global_rank(self.pp_group, self.first_pp_rank)
             self.last_pp_rank_global_id = dist.get_global_rank(self.pp_group, self.last_pp_rank)
 
             self.prefiller = self.create_prefill_stage()
             self.decoder = self.create_decode_stage()
 
+            # Add decode step counter for debugging
+            self._decode_step_count = 0
+            self._tokens_generated = []
+
     def __del__(self):
-        dist.destroy_process_group()
+        if dist.is_initialized():
+            dist.destroy_process_group()
 
     # Helper function to get example inputs and outputs for the stages.
-    def get_example_ins_outs(self, batch_size: int , seqlen: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_example_ins_outs(self, batch_size: int, seqlen: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         This function generates example inputs and outputs for the prefill and decode stages.
 
@@ -1391,17 +1471,18 @@ class DistributedGenerator(LocalGenerator):
     def create_prefill_stage(self):
         """
         Creates a pipeline stage for prefilling.
-
-        Returns:
-            PipelineStage: The created pipeline stage.
         """
         batch_size = 1
 
-        # Create prefill stage
+        # Use PipelineModelWrapper to handle 2D input_pos
+        # BUT we need a wrapper that can handle the padding!
+        wrapped_model = PaddingAwarePipelineWrapper(self.model, self.seqlen_prefill)
+
+        # Create prefill stage with the full sequence length
         logger.debug(f"Creating pipeline stage for prefill {self.pp_rank=}, {self.pp_degree=}")
         example_inputs, example_outputs = self.get_example_ins_outs(batch_size, self.seqlen_prefill)
         prefill_stage = PipelineStage(
-            self.model,
+            wrapped_model,
             self.pp_rank,
             self.pp_degree,
             self.device,
@@ -1411,29 +1492,24 @@ class DistributedGenerator(LocalGenerator):
         )
 
         # Create schedule
-        # Number of micro-batches for the schedule is 1, because each step() call we
-        # only push 1 micro-batch into the pipeline. But we can continuously push
-        # new micro-batches into the pipeline as they arrive, achieving same
-        # pipelining effect.
-        prefiller = ScheduleGPipe(prefill_stage, 1)
+        num_microbatches = max(self.pp_degree, 2)
+        prefiller = ScheduleGPipe(prefill_stage, num_microbatches)
         return prefiller
 
     def create_decode_stage(self):
         """
         Creates a decode stage for the pipeline parallelism.
-
-        Returns:
-            ScheduleGPipe: The decode stage.
         """
-        # seqlen = 1 now
         seqlen_decode = 1
         batch_size = 1
 
+        # Wrap the model to handle 2D input_pos
+        wrapped_model = PipelineModelWrapper(self.model)
+
         # Create decode stage
-        # logger.info(f"Creating pipeline stage for decode {self.pp_rank=}, {self.pp_degree=}")
         example_inputs, example_outputs = self.get_example_ins_outs(batch_size, seqlen_decode)
         decode_stage = PipelineStage(
-            self.model,
+            wrapped_model,  # Use wrapped model
             self.pp_rank,
             self.pp_degree,
             self.device,
@@ -1441,27 +1517,22 @@ class DistributedGenerator(LocalGenerator):
             output_args=example_outputs,
             group=self.pp_group,
         )
-        # create schedule
-        decoder = ScheduleGPipe(decode_stage, 1)
 
+        # Create schedule
+        num_microbatches = max(self.pp_degree, 2)
+        decoder = ScheduleGPipe(decode_stage, num_microbatches)
         return decoder
 
     def prefill(
-        self,
-        model: Model,
-        x: torch.Tensor,
-        input_pos: torch.Tensor,
-        batch: Optional[Dict[str, Any]] = None,  # Inputs for multimodal models
-        *,
-        sequential_prefill=True,
-        **sampling_kwargs,
+            self,
+            model: Model,
+            x: torch.Tensor,
+            input_pos: torch.Tensor,
+            batch: Optional[Dict[str, Any]] = None,
+            *,
+            sequential_prefill=True,
+            **sampling_kwargs,
     ) -> torch.Tensor:
-        """
-        This function is used to prefill the model with a given prompt. For pipeline parallelism we need to pad the input.
-
-        Returns:
-            torch.Tensor: The prefilled tensor.
-        """
         if self.builder_args.pp == 1:
             return super().prefill(
                 model,
@@ -1472,66 +1543,99 @@ class DistributedGenerator(LocalGenerator):
                 **sampling_kwargs,
             )
 
-        pad_token_id = self.tokenizer.pad_id if self.tokenizer.pad_id is not None else self.tokenizer.eos_id
+        # Add diagnostics (gated by env var)
+        if os.getenv('DEBUG_PIPELINE'):
+            if self.pp_rank == 0:
+                print(f"=== Prefill Diagnostics ===")
+                print(f"Model config max_seq_length: {getattr(self.model.config, 'max_seq_length', 'Not found')}")
+                print(f"seqlen_prefill: {self.seqlen_prefill}")
+                print(f"Prompt length: {x.size(1)}")
+
+        pad_token_id = 128004
         prompt_length = x.size(1)
 
+        # Create padded sequence with correct batch size for microbatching
+        batch_size = max(self.pp_degree, 2)
+
+        # Pad to seqlen_prefill to match pipeline stage expectations
         padded_seq = torch.full(
-            (1, self.seqlen_prefill), pad_token_id, dtype=torch.int64, device=self.device
-            )
-        padded_seq[:,:prompt_length] = x
-        input_pos = torch.arange(
+            (batch_size, self.seqlen_prefill), pad_token_id, dtype=torch.int64, device=self.device
+        )
+        # Fill only the first microbatch with the actual prompt
+        padded_seq[0, :prompt_length] = x[0]
+
+        # Create input_pos for the full padded sequence
+        input_pos_full = torch.arange(
             self.seqlen_prefill,
             device=self.device,
             dtype=torch.int,
-            )
+        )
 
-        # Prefill phase
-        # Run context input through pipeline
-        # TODO: we need to pass `input_pos` and `cache_lane` to each stage.
-        lane = 0
-        kwargs = {"input_pos": input_pos, "cache_lane": lane}
-        
+        # Replicate for each microbatch - but with different positions for padding
+        input_pos_batched = input_pos_full.unsqueeze(0).expand(batch_size, -1)
+
+        # Create a special kwargs that includes microbatch indices
+        # This will be used by the wrapper to determine cache lanes
+        kwargs = {
+            "input_pos": input_pos_batched,
+            "cache_lane": 0,  # Default lane, will be overridden per microbatch
+            "actual_seq_len": prompt_length,  # Pass this to the wrapper
+            "microbatch_indices": torch.arange(batch_size, device=self.device),  # Add this
+        }
+
+        if os.getenv('DEBUG_PIPELINE'):
+            print(f"[Rank {self.pp_rank}] Prefill: Running pipeline with prompt_length={prompt_length}")
+
         if self.pp_rank == self.first_pp_rank:
             logits = self.prefiller.step(padded_seq, **kwargs)
         elif self.pp_rank == self.last_pp_rank:
             logits = self.prefiller.step(**kwargs)
-        else:  # middle pp ranks
+        else:
             self.prefiller.step(**kwargs)
 
         if self.pp_rank == self.last_pp_rank:
-            new_token = self.sample(logits[:,:prompt_length], need_probs=False, **sampling_kwargs)[0]
+            # Extract only the logit at the last real token position from the first microbatch
+            relevant_logits = logits[0:1, prompt_length - 1:prompt_length, :]
+
+            if os.getenv('DEBUG_PIPELINE'):
+                print(f"[Rank {self.pp_rank}] Prefill logits shape: {relevant_logits.shape}")
+
+            new_token = self.sample(relevant_logits, need_probs=False, **sampling_kwargs)[0]
+
+            if os.getenv('DEBUG_PIPELINE'):
+                print(f"[Rank {self.pp_rank}] First token generated: {new_token.item()}")
+                if hasattr(self, 'tokenizer'):
+                    print(f"[Rank {self.pp_rank}] First token text: '{self.tokenizer.decode([new_token.item()])}'")
+
             if self.pp_rank != self.first_pp_rank:
-                dist.send(
-                    new_token,
-                    dst=self.first_pp_rank_global_id,
-                    group=self.pp_group,
-                )
+                dist.send(new_token, dst=self.first_pp_rank_global_id, group=self.pp_group)
         else:
             new_token = torch.zeros(1, 1, device=self.device, dtype=torch.int64)
             if self.pp_rank == self.first_pp_rank:
-                dist.recv(
-                    new_token,
-                    src=self.last_pp_rank_global_id,
-                    group=self.pp_group,
-                )
+                dist.recv(new_token, src=self.last_pp_rank_global_id, group=self.pp_group)
+                if os.getenv('DEBUG_PIPELINE'):
+                    print(f"[Rank {self.pp_rank}] Received first token: {new_token.item()}")
+
+        # Reset decode counter after prefill
+        self._decode_step_count = 0
+        self._tokens_generated = [new_token.item()]
+
+        if os.getenv('DEBUG_PIPELINE'):
+            print(f"[Rank {self.pp_rank}] Prefill complete. Next decode position will be {prompt_length}")
 
         return new_token
 
     def decode_one_token(
-        self,
-        model: Model,
-        x: torch.Tensor,
-        input_pos: torch.Tensor,
-        need_probs: bool,
-        batch: Optional[Dict[str, Any]] = None,  # Inputs for multimodal models
-        **sampling_kwargs,
+            self,
+            model: Model,
+            x: torch.Tensor,
+            input_pos: torch.Tensor,
+            need_probs: bool,
+            batch: Optional[Dict[str, Any]] = None,
+            **sampling_kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Decodes a single token.
-
-        # TODO: implement speculative decoding with pp>1
-        Returns:
-            Tuple[torch.Tensor, None]: A tuple containing the decoded token and None.
+        Decodes a single token with proper microbatch handling.
         """
         if self.builder_args.pp == 1:
             return super().decode_one_token(
@@ -1543,70 +1647,278 @@ class DistributedGenerator(LocalGenerator):
                 **sampling_kwargs,
             )
 
-        # input_pos: [B, 1]
+        # Debug logging (gated by env var)
+        if os.getenv('DEBUG_PIPELINE') and self._decode_step_count < 10:
+            print(f"\n[Rank {self.pp_rank}] === Decode step {self._decode_step_count} ===")
+            print(f"[Rank {self.pp_rank}] Input token: {x.item() if x.numel() == 1 else x}")
+            print(f"[Rank {self.pp_rank}] Input pos: {input_pos}")
+            if hasattr(self, 'tokenizer') and x.numel() == 1:
+                print(f"[Rank {self.pp_rank}] Input token text: '{self.tokenizer.decode([x.item()])}'")
+
+        # Ensure proper shapes
         assert input_pos.shape[-1] == 1
+        new_token = x.view(1, -1)  # Shape: [1, 1]
 
-        new_token = x.view(1, -1)
+        # Get scalar position
+        pos_value = input_pos.item() if input_pos.numel() == 1 else input_pos[0].item()
 
-        lane = 0
-        kwargs = {"input_pos": input_pos, "cache_lane": lane}
+        # CRITICAL: The pipeline expects num_microbatches samples
+        num_microbatches = max(self.pp_degree, 2)
+        if new_token.size(0) < num_microbatches:
+            padding = new_token.repeat(num_microbatches - 1, 1)
+            new_token = torch.cat([new_token, padding], dim=0)
+
+        # Create proper input_pos for all microbatches
+        if input_pos.dim() == 1:
+            input_pos = input_pos.unsqueeze(0)
+        if input_pos.size(0) < num_microbatches:
+            input_pos = input_pos.expand(num_microbatches, -1)
+
+        # Always use cache lane 0 for decode (we only care about the real sequence)
+        kwargs = {
+            "input_pos": input_pos,
+            "cache_lane": 0,
+            "microbatch_indices": torch.zeros(num_microbatches, device=self.device, dtype=torch.long),  # All use lane 0
+        }
+
         # Run data through pipeline
         if self.pp_rank == self.first_pp_rank:
-            logits = self.decoder.step(new_token, **kwargs)
+            if os.getenv('DEBUG_PIPELINE') and self._decode_step_count < 10:
+                print(f"[Rank {self.pp_rank}] Sending token {new_token[0].item()} through decoder")
+
+            output = self.decoder.step(new_token, **kwargs)
+
         elif self.pp_rank == self.last_pp_rank:
             logits = self.decoder.step(**kwargs)
+
+            if os.getenv('DEBUG_PIPELINE') and self._decode_step_count < 10:
+                print(f"[Rank {self.pp_rank}] Received logits shape: {logits.shape}")
+
+            # Only use the first sample's logits
+            logits = logits[0:1]
+            new_token, _ = self.sample(logits, need_probs=need_probs, **sampling_kwargs)
+
+            if os.getenv('DEBUG_PIPELINE') and self._decode_step_count < 10:
+                print(f"[Rank {self.pp_rank}] Generated token: {new_token.item()}")
+                if hasattr(self, 'tokenizer'):
+                    print(f"[Rank {self.pp_rank}] Generated token text: '{self.tokenizer.decode([new_token.item()])}'")
+
+            if self.pp_rank != self.first_pp_rank:
+                dist.send(new_token, dst=self.first_pp_rank_global_id, group=self.pp_group)
         else:  # middle pp ranks
             self.decoder.step(**kwargs)
 
-        # Decode the output
-        if self.pp_rank == self.last_pp_rank:
-            new_token, _ = self.sample(logits, need_probs=need_probs, **sampling_kwargs)
-            if self.pp_rank != self.first_pp_rank:
-                dist.send(
-                    new_token,
-                    dst=self.first_pp_rank_global_id,
-                    group=self.pp_group,
-                )
+        # Handle token reception for first rank
+        if self.pp_rank == self.first_pp_rank:
+            if self.pp_rank != self.last_pp_rank:
+                new_token = torch.zeros(1, 1, device=self.device, dtype=torch.int64)
+                dist.recv(new_token, src=self.last_pp_rank_global_id, group=self.pp_group)
+                new_token = new_token[0]  # Convert to 1D
+
         else:
-            new_token = torch.zeros(1, 1, device=self.device, dtype=torch.int64)
-            if self.pp_rank == self.first_pp_rank:
-                dist.recv(
-                    new_token,
-                    src=self.last_pp_rank_global_id,
-                    group=self.pp_group,
-                )
-                #TODO: Why do we get 2d tensor here?
-                new_token=new_token[0]
+            new_token = torch.zeros(1, device=self.device, dtype=torch.int64)
+
+        # Update counters
+        self._decode_step_count += 1
+        if self.pp_rank == self.first_pp_rank and new_token.numel() == 1:
+            self._tokens_generated.append(new_token.item())
+
         return new_token, None
 
     def sample(
-        self,
-        logits,
-        need_probs: bool,
-        temperature: float = 0,
-        top_k: Optional[int] = None,
+            self,
+            logits,
+            need_probs: bool,
+            temperature: float = 0,
+            top_k: Optional[int] = None,
     ):
         if temperature == 0 and not need_probs:
             _, idx_next = torch.topk(logits[0, -1], k=1, dim=-1)
             return (idx_next, None)
         probs = self.logits_to_probs(logits[0, -1], temperature, top_k)
         idx_next = self.multinomial_sample_one_no_sync(probs)
-        
+
         return idx_next, probs
 
 
-def run_generator(
-    args,
-    rank: Optional[int] =None
-    ):
+class PipelineModelWrapper(torch.nn.Module):
     """
-    This function creates and executes a generator 
+    Wrapper for the model to handle 2D input_pos from pipeline parallelism.
+    Also ensures cache_lane is properly passed through.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self._forward_count = 0
+        self._last_position = -1
+
+    def forward(self, tokens, input_pos=None, cache_lane=None, **kwargs):
+        if self._forward_count < 10:
+            print(f"\n[PipelineModelWrapper] Forward {self._forward_count}")
+            print(f"[PipelineModelWrapper] Tokens shape: {tokens.shape}")
+            if tokens.shape[1] == 1:  # Decode step
+                print(f"[PipelineModelWrapper] Token values: {tokens[:, 0]}")
+            print(f"[PipelineModelWrapper] Input_pos shape: {input_pos.shape if input_pos is not None else 'None'}")
+
+        # Handle 2D input_pos by taking the first row
+        if input_pos is not None and input_pos.dim() == 2:
+            # All samples in the batch use the same positions, so take the first row
+            input_pos = input_pos[0]  # Shape: [seq_len]
+
+        if self._forward_count < 10 and input_pos is not None:
+            if input_pos.numel() == 1:
+                current_pos = input_pos.item()
+                print(f"[PipelineModelWrapper] Position: {current_pos}")
+                if self._last_position >= 0 and current_pos != self._last_position + 1:
+                    print(
+                        f"[PipelineModelWrapper] WARNING: Non-sequential position! Last: {self._last_position}, Current: {current_pos}")
+                self._last_position = current_pos
+
+        # IMPORTANT: Remove microbatch_indices from kwargs before passing to model
+        kwargs_for_model = kwargs.copy()
+        kwargs_for_model.pop('microbatch_indices', None)
+
+        # Ensure cache_lane is passed through
+        if cache_lane is not None:
+            kwargs_for_model['cache_lane'] = cache_lane
+
+        output = self.model(tokens, input_pos=input_pos, **kwargs_for_model)
+
+        if self._forward_count < 10:
+            print(f"[PipelineModelWrapper] Output shape: {output.shape}")
+            print(
+                f"[PipelineModelWrapper] Output stats - mean: {output.mean().item():.4f}, std: {output.std().item():.4f}")
+
+        self._forward_count += 1
+        return output
+
+
+# Similarly, update the PaddingAwarePipelineWrapper class:
+
+class PaddingAwarePipelineWrapper(torch.nn.Module):
+    """
+    Wrapper that handles padded sequences and routes microbatches to different cache lanes.
+    """
+
+    def __init__(self, model, expected_seq_len):
+        super().__init__()
+        self.model = model
+        self.expected_seq_len = expected_seq_len
+        self._forward_count = 0
+        self._current_microbatch = 0
+
+    def forward(self, tokens, input_pos=None, cache_lane=None, actual_seq_len=None, microbatch_indices=None, **kwargs):
+        if os.getenv('DEBUG_PIPELINE') and self._forward_count < 5:
+            print(f"\n[PaddingAwarePipelineWrapper] Forward {self._forward_count}")
+            print(f"[PaddingAwarePipelineWrapper] Tokens shape: {tokens.shape}")
+            print(
+                f"[PaddingAwarePipelineWrapper] Input_pos shape: {input_pos.shape if input_pos is not None else 'None'}")
+            print(f"[PaddingAwarePipelineWrapper] Actual seq len: {actual_seq_len}")
+            print(f"[PaddingAwarePipelineWrapper] Microbatch indices: {microbatch_indices}")
+
+        batch_size = tokens.shape[0]
+        outputs = []
+
+        # Process each sample in the batch
+        for i in range(batch_size):
+            # Determine which cache lane to use
+            if microbatch_indices is not None:
+                current_cache_lane = microbatch_indices[i].item()
+            else:
+                current_cache_lane = i
+
+            # Get tokens and positions for this sample
+            sample_tokens = tokens[i:i + 1]
+            sample_input_pos = input_pos[i] if input_pos is not None and input_pos.dim() == 2 else input_pos
+
+            # Only trim for the first microbatch (cache lane 0)
+            if current_cache_lane == 0 and actual_seq_len is not None and actual_seq_len < sample_tokens.size(1):
+                sample_tokens = sample_tokens[:, :actual_seq_len]
+                if sample_input_pos is not None:
+                    sample_input_pos = sample_input_pos[:actual_seq_len]
+
+            # Forward through model with the appropriate cache lane
+            kwargs_copy = kwargs.copy()
+            kwargs_copy['cache_lane'] = current_cache_lane
+
+            # IMPORTANT: Remove microbatch_indices before passing to model
+            kwargs_copy.pop('microbatch_indices', None)
+            kwargs_copy.pop('actual_seq_len', None)
+
+            if os.getenv('DEBUG_PIPELINE') and self._forward_count < 5:
+                print(f"[PaddingAwarePipelineWrapper] Processing microbatch {i} with cache_lane={current_cache_lane}")
+
+            output = self.model(sample_tokens, input_pos=sample_input_pos, **kwargs_copy)
+
+            # Pad output if necessary
+            if output.size(1) < self.expected_seq_len:
+                pad_length = self.expected_seq_len - output.size(1)
+                padding = torch.zeros(
+                    output.size(0), pad_length, output.size(2),
+                    dtype=output.dtype, device=output.device
+                )
+                output = torch.cat([output, padding], dim=1)
+
+            outputs.append(output)
+
+        # Concatenate all outputs
+        final_output = torch.cat(outputs, dim=0)
+
+        self._forward_count += 1
+        self._current_microbatch = 0  # Reset for next forward
+
+        return final_output
+
+
+class DynamicPipelineModelWrapper(torch.nn.Module):
+    """
+    Wrapper that pads outputs to match expected pipeline stage dimensions.
+    """
+
+    def __init__(self, model, expected_seq_len):
+        super().__init__()
+        self.model = model
+        self.expected_seq_len = expected_seq_len
+
+    def forward(self, tokens, input_pos=None, cache_lane=None, **kwargs):
+        # Handle 2D input_pos
+        if input_pos is not None and input_pos.dim() == 2:
+            input_pos = input_pos[0]
+
+        # Get actual sequence length
+        actual_seq_len = tokens.size(1)
+
+        # Forward through model
+        if cache_lane is not None:
+            kwargs['cache_lane'] = cache_lane
+        output = self.model(tokens, input_pos=input_pos, **kwargs)
+
+        # If output sequence length doesn't match expected, pad it
+        if actual_seq_len < self.expected_seq_len:
+            # output shape: [batch_size, seq_len, hidden_dim]
+            pad_length = self.expected_seq_len - actual_seq_len
+            padding = torch.zeros(
+                output.size(0), pad_length, output.size(2),
+                dtype=output.dtype, device=output.device
+            )
+            output = torch.cat([output, padding], dim=1)
+
+        return output
+
+
+def run_generator(
+        args,
+        rank: Optional[int] = None
+):
+    """
+    This function creates and executes a generator
     """
     builder_args = BuilderArgs.from_args(args)
     speculative_builder_args = BuilderArgs.from_speculative_args(args)
     tokenizer_args = TokenizerArgs.from_args(args)
-    generator_args = GeneratorArgs.from_args(args)    
-    #Setup rank 1 and up to suppress log messages and print messages
+    generator_args = GeneratorArgs.from_args(args)
+    # Setup rank 1 and up to suppress log messages and print messages
     if builder_args.distributed and rank != 0:
         logger.setLevel(logging.CRITICAL)
         context = contextlib.redirect_stdout(None)
@@ -1631,19 +1943,29 @@ def run_generator(
         for _ in gen.chat(generator_args):
             pass
 
+
 def main(args):
     builder_args = BuilderArgs.from_args(args)
-    
-    if builder_args.distributed:
-        world_size = builder_args.tp * builder_args.pp
 
-        ctx = mp.get_context('spawn')
-        with futures.ProcessPoolExecutor(max_workers=world_size-1, mp_context=ctx) as executor:
-            for i in range(1,world_size):
-                fn = partial(run_generator, args, i)
-                executor.submit(run_in_dist_env, world_size, i, fn)
-            #Starting rank 0
-            fn = partial(run_generator, args, 0)
-            run_in_dist_env(world_size, 0, fn)
+    if builder_args.distributed:
+        # Check if we're already running under torchrun
+        # torchrun sets these environment variables
+        if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+            # We're already in a distributed environment set up by torchrun
+            # Just run the generator directly
+            rank = int(os.environ["RANK"])
+            run_generator(args, rank)
+        else:
+            # We're not under torchrun, so manually spawn processes
+            world_size = builder_args.tp * builder_args.pp
+
+            ctx = mp.get_context('spawn')
+            with futures.ProcessPoolExecutor(max_workers=world_size - 1, mp_context=ctx) as executor:
+                for i in range(1, world_size):
+                    fn = partial(run_generator, args, i)
+                    executor.submit(run_in_dist_env, world_size, i, fn)
+                # Starting rank 0
+                fn = partial(run_generator, args, 0)
+                run_in_dist_env(world_size, 0, fn)
     else:
         run_generator(args)
