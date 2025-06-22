@@ -6,6 +6,7 @@ Usage:
     python dcp_to_safetensors.py \
         --dcp-dir /path/to/checkpoint/step-0 \
         --output-dir /path/to/output \
+        --tokenizer-path /path/to/tokenizer/dir \
         --model-size 3B
 """
 
@@ -18,6 +19,7 @@ from safetensors.torch import save_file
 from tqdm import tqdm
 from typing import Dict, Any
 import torch.distributed as dist
+import shutil
 
 # Import the same modules as dcp_util.py
 from torchchat.model import Transformer as TorchchatTransformer, TransformerArgs, ModelArgs as TorchchatModelArgs, \
@@ -35,6 +37,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="DCP to safetensors converter")
     parser.add_argument("--dcp-dir", type=Path, required=True, help="Path to DCP checkpoint directory")
     parser.add_argument("--output-dir", type=Path, required=True, help="Output directory")
+    parser.add_argument("--tokenizer-path", type=Path, required=True,
+                        help="Path to directory containing tokenizer files (tokenizer.model, tokenizer.json, etc.)")
     parser.add_argument("--model-size", type=str, default="3B", help="Model size (e.g., 3B, 8B, 70B)")
     parser.add_argument("--max-shard-size", type=str, default="10GB", help="Max size per shard")
     parser.add_argument("--dtype", type=str, default="auto",
@@ -208,16 +212,54 @@ def convert_dtype(state_dict, target_dtype_str):
     return converted
 
 
-def copy_tokenizer_files(dcp_dir: Path, output_dir: Path):
-    """Copy tokenizer files from DCP directory to output."""
-    tokenizer_files = ["tokenizer.model", "tokenizer.json", "tokenizer_config.json"]
+def copy_tokenizer_files(tokenizer_path: Path, output_dir: Path):
+    """Copy tokenizer files from specified tokenizer directory to output."""
+    # Common tokenizer file patterns
+    tokenizer_patterns = [
+        "tokenizer.model",  # SentencePiece model
+        "tokenizer.json",  # HF tokenizer
+        "tokenizer_config.json",  # HF tokenizer config
+        "special_tokens_map.json",  # Special tokens mapping
+        "added_tokens.json",  # Additional tokens
+        "vocab.json",  # Vocabulary
+        "merges.txt",  # BPE merges
+        "*.spm",  # Any SentencePiece model
+        "*.tiktoken",  # Tiktoken files
+    ]
 
-    for filename in tokenizer_files:
-        src = dcp_dir / filename
-        if src.exists():
-            import shutil
-            shutil.copy2(src, output_dir / filename)
-            print(f"Copied {filename}")
+    if not tokenizer_path.exists():
+        raise ValueError(f"Tokenizer path does not exist: {tokenizer_path}")
+
+    if not tokenizer_path.is_dir():
+        raise ValueError(f"Tokenizer path must be a directory: {tokenizer_path}")
+
+    print(f"\nCopying tokenizer files from: {tokenizer_path}")
+    copied_files = []
+
+    # Copy exact matches and glob patterns
+    for pattern in tokenizer_patterns:
+        if '*' in pattern:
+            # Handle glob patterns
+            for file in tokenizer_path.glob(pattern):
+                if file.is_file():
+                    shutil.copy2(file, output_dir / file.name)
+                    copied_files.append(file.name)
+                    print(f"  Copied: {file.name}")
+        else:
+            # Handle exact file names
+            src = tokenizer_path / pattern
+            if src.exists() and src.is_file():
+                shutil.copy2(src, output_dir / pattern)
+                copied_files.append(pattern)
+                print(f"  Copied: {pattern}")
+
+    if not copied_files:
+        print(f"  WARNING: No tokenizer files found in {tokenizer_path}")
+        print(f"  Looked for: {', '.join(tokenizer_patterns)}")
+    else:
+        print(f"  Total files copied: {len(copied_files)}")
+
+    return copied_files
 
 
 def calculate_intermediate_size(dim, ffn_dim_multiplier, multiple_of):
@@ -390,6 +432,15 @@ def save_as_safetensors(state_dict, output_dir: Path, max_shard_size: int):
 def main():
     args = parse_args()
 
+    # Validate tokenizer path
+    if not args.tokenizer_path.exists():
+        print(f"ERROR: Tokenizer path does not exist: {args.tokenizer_path}")
+        return 1
+
+    if not args.tokenizer_path.is_dir():
+        print(f"ERROR: Tokenizer path must be a directory: {args.tokenizer_path}")
+        return 1
+
     # Initialize distributed if not already initialized
     if not dist.is_initialized():
         os.environ["MASTER_ADDR"] = "localhost"
@@ -398,6 +449,7 @@ def main():
 
     print(f"Loading DCP checkpoint from {args.dcp_dir}")
     print(f"Model size: {args.model_size}, Vocab size: {args.vocab_size}")
+    print(f"Tokenizer path: {args.tokenizer_path}")
 
     # Load the model with checkpoint
     model, model_config = load_checkpoint_to_model(args.dcp_dir, args.model_size, args.vocab_size)
@@ -422,8 +474,11 @@ def main():
     # Save config.json for vLLM with the model_config
     save_model_config(args.output_dir, args.model_size, args.vocab_size, model_config)
 
-    # Copy tokenizer files
-    copy_tokenizer_files(args.dcp_dir, args.output_dir)
+    # Copy tokenizer files from specified path
+    copied_files = copy_tokenizer_files(args.tokenizer_path, args.output_dir)
+
+    if not copied_files:
+        print("\nWARNING: No tokenizer files were copied. Make sure your tokenizer path contains the necessary files.")
 
     print(f"\nConversion complete! Output saved to: {args.output_dir}")
     total_size = sum(t.numel() * t.element_size() for t in state_dict.values() if isinstance(t, torch.Tensor))
