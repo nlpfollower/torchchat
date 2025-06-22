@@ -17,7 +17,7 @@ import torch._inductor.config
 import torch.distributed as dist
 
 from torchchat.cli.dcp_util import load_dcp_checkpoint
-from torchchat.distributed.utils import(
+from torchchat.distributed.utils import (
     Color as color,
     CUDATrackTime,
     init_distributed,
@@ -36,7 +36,6 @@ from torchchat.utils.build_utils import (
 from torchchat.utils.measure_time import measure_time
 from torchchat.utils.quantize import quantize_model
 
-
 from torchtune.models.convert_weights import meta_to_tune
 
 from torchtune.models.llama3_1._position_embeddings import Llama3ScaledRoPE
@@ -50,6 +49,8 @@ from torchtune.training import set_default_dtype
 class BuilderArgs:
     checkpoint_path: Optional[Union[Path, str]] = None
     checkpoint_dir: Optional[Union[Path, str]] = None
+    checkpoint_folder: str = "checkpoint"
+    dcp_model_size: str = "3B"
     dcp_dir: Optional[Union[Path, str]] = None
     params_path: Optional[Union[Path, str]] = None
     params_table: Optional[str] = None
@@ -82,13 +83,13 @@ class BuilderArgs:
                 self.device = "cpu"
 
         if not (
-            (self.checkpoint_path and self.checkpoint_path.is_file())
-            or (self.checkpoint_dir and self.checkpoint_dir.is_dir())
-            or (self.gguf_path and self.gguf_path.is_file())
-            or (self.dso_path and Path(self.dso_path).is_file())
-            or (self.aoti_package_path and Path(self.aoti_package_path).is_file())
-            or (self.pte_path and Path(self.pte_path).is_file())
-            or (self.dcp_dir and Path(self.dcp_dir).is_dir())
+                (self.checkpoint_path and self.checkpoint_path.is_file())
+                or (self.checkpoint_dir and self.checkpoint_dir.is_dir())
+                or (self.gguf_path and self.gguf_path.is_file())
+                or (self.dso_path and Path(self.dso_path).is_file())
+                or (self.aoti_package_path and Path(self.aoti_package_path).is_file())
+                or (self.pte_path and Path(self.pte_path).is_file())
+                or (self.dcp_dir and Path(self.dcp_dir).is_dir())
         ):
             raise RuntimeError(
                 "need to specify a valid checkpoint path, checkpoint dir, gguf path, DSO path, AOTI PACKAGE or PTE path"
@@ -122,6 +123,8 @@ class BuilderArgs:
         if hasattr(args, "dcp_dir"):
             dcp_dir = args.dcp_dir
 
+        checkpoint_folder = getattr(args, "checkpoint_folder", "checkpoint")
+        dcp_model_size = getattr(args, "dcp_model_size", "3B")
         checkpoint_path = args.checkpoint_path
         params_table = args.params_table
         distribution_path = None
@@ -129,14 +132,14 @@ class BuilderArgs:
             model_config = resolve_model_config(args.model)
 
             checkpoint_path = (
-                Path(args.model_directory)
-                / model_config.name
-                / model_config.checkpoint_file
+                    Path(args.model_directory)
+                    / model_config.name
+                    / model_config.checkpoint_file
             )
             # The transformers config is keyed on the last section
             # of the name/path.
             params_table = (
-                model_config.transformer_params_key or model_config.name.split("/")[-1]
+                    model_config.transformer_params_key or model_config.name.split("/")[-1]
             )
 
             distribution_path = model_config.distribution_path
@@ -192,15 +195,12 @@ class BuilderArgs:
             'efficient_attention': torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
             'cudnn_attention': torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
         }
-        attention_backend = sdp_backend_dict[args.attention_backend]
-        if args.device == "cpu" and (args.attention_backend == "efficient_attention"
-                                     or args.attention_backend == "cudnn_attention"):
-            print(f"Warning: {args.attention_backend} is not supported on CPU. Using math instead.")
-            attention_backend = torch.nn.attention.SDPBackend.MATH
         return cls(
             checkpoint_dir=checkpoint_dir,
             checkpoint_path=checkpoint_path,
             dcp_dir=dcp_dir,
+            checkpoint_folder=checkpoint_folder,
+            dcp_model_size=dcp_model_size,
             params_path=args.params_path,
             params_table=params_table,
             gguf_path=args.gguf_path,
@@ -211,7 +211,7 @@ class BuilderArgs:
             device=args.device,
             precision=dtype,
             setup_caches=(
-                output_dso_path or output_pte_path or output_aoti_package_path
+                    output_dso_path or output_pte_path or output_aoti_package_path
             ),
             distributed=distributed,
             pp=pp,
@@ -221,7 +221,6 @@ class BuilderArgs:
             is_chat_model=is_chat_model,
             dynamic_shapes=getattr(args, "dynamic_shapes", False),
             max_seq_length=getattr(args, "max_seq_length", None),
-            attention_backend=attention_backend,
         )
 
     @classmethod
@@ -286,9 +285,9 @@ class TokenizerArgs:
         return
 
     def validate_model(
-        self,
-        model: Optional[Model],
-        model_description: str = "model",
+            self,
+            model: Optional[Model],
+            model_description: str = "model",
     ) -> None:
         if model is None:
             return
@@ -304,9 +303,9 @@ class TokenizerArgs:
         use_sentencepiece = not (use_tiktoken or use_hf_tokenizer)
 
         if (
-            (is_tiktoken and not use_tiktoken) or
-            (is_hf_tokenizer and not use_hf_tokenizer) or
-            (is_sentencepiece and not use_sentencepiece)
+                (is_tiktoken and not use_tiktoken) or
+                (is_hf_tokenizer and not use_hf_tokenizer) or
+                (is_sentencepiece and not use_sentencepiece)
         ):
             raise RuntimeError(
                 "model-specified tokenizer ({}) does not match provided tokenizer ({}) for {}".format(
@@ -339,9 +338,9 @@ class TokenizerArgs:
         elif args.model:  # Using a named, well-known model
             model_config = resolve_model_config(args.model)
             tokenizer_path = (
-                Path(args.model_directory)
-                / model_config.name
-                / model_config.tokenizer_file
+                    Path(args.model_directory)
+                    / model_config.name
+                    / model_config.tokenizer_file
             )
         elif args.checkpoint_path:
             tokenizer_path = args.checkpoint_path.parent / "tokenizer.model"
@@ -365,7 +364,6 @@ def _initialize_tokenizer(tokenizer_args: TokenizerArgs):
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
-
 
 # support running without installing as a package
 wd = Path(__file__).parent.parent.resolve()
@@ -472,7 +470,7 @@ def _load_model_default(builder_args: BuilderArgs) -> Model:
     if model.config.model_type == ModelType.Flamingo:
         # TODO: Refactor this. For now, overwrite the model with model loaded from params_path
         with set_default_dtype(builder_args.precision), torch.device(
-            builder_args.device
+                builder_args.device
         ):
             # It doubles the model size the memory, with redundancies of the initialized weights.
             # model = Model.from_params(builder_args.params_path)
@@ -507,13 +505,29 @@ def _load_model(builder_args: BuilderArgs) -> Model:
                   else ModelArgs.from_table(builder_args.params_table))
         config.vocab_size = builder_args.vocab_size
         config.max_seq_length = builder_args.max_seq_length
-        model = load_dcp_checkpoint(config, builder_args.dcp_dir)
+
+        # Add these parameters - you can make them configurable through BuilderArgs
+        checkpoint_folder = getattr(builder_args, 'checkpoint_folder', 'checkpoint')
+        model_size = getattr(builder_args, 'dcp_model_size', '3B')
+
+        # Pass TP and PP parameters
+        tp = getattr(builder_args, 'tp', 1)
+        pp = getattr(builder_args, 'pp', 1)
+
+        model = load_dcp_checkpoint(
+            config,
+            builder_args.dcp_dir,
+            checkpoint_folder=checkpoint_folder,
+            model_size=model_size,
+            tp=tp,
+            pp=pp
+        )
         return model.eval()
     else:
         model = _load_model_default(builder_args)
 
     if builder_args.dso_path or builder_args.aoti_package_path:
-        # AOTI-compoiled model will load its own weights.
+        # AOTI-compiled model will load its own weights.
         # Release weights here to avoid OOM
         import gc
         if hasattr(model, "model"):
@@ -526,18 +540,18 @@ def _load_model(builder_args: BuilderArgs) -> Model:
 
 
 def _initialize_model(
-    builder_args: BuilderArgs,
-    quantize,
-    tokenizer=None,
-    max_seq_length=None,
-    support_tensor_subclass: bool = True,
+        builder_args: BuilderArgs,
+        quantize,
+        tokenizer=None,
+        max_seq_length=None,
+        support_tensor_subclass: bool = True,
 ) -> Model:
     if tokenizer is not None:
         builder_args.vocab_size = tokenizer.n_words
 
     print("Loading model...")
     if builder_args.gguf_path and (
-        builder_args.dso_path or builder_args.pte_path or builder_args.aoti_package_path
+            builder_args.dso_path or builder_args.pte_path or builder_args.aoti_package_path
     ):
         print("Setting gguf_kwargs for generate.")
         is_dso = builder_args.dso_path is not None
@@ -576,6 +590,7 @@ def _initialize_model(
 
             def do_nothing(max_batch_size, max_seq_length):
                 pass
+
             model.setup_caches = do_nothing
 
             model.forward = torch._export.aot_load(
@@ -614,6 +629,7 @@ def _initialize_model(
 
             def do_nothing(max_batch_size, max_seq_length):
                 pass
+
             model.setup_caches = do_nothing
 
             model.forward = aoti_compiled_model
@@ -649,100 +665,100 @@ def _initialize_model(
             model = PTEModel(config, builder_args.pte_path)
         except Exception:
             raise RuntimeError(f"Failed to load ET compiled {builder_args.pte_path}")
-    elif builder_args.distributed:
-        pp_degree = builder_args.pp
-        tp_degree = builder_args.tp
-
-        init_distributed()
-        rank = dist.get_rank()
-        torch.cuda.set_device(rank % torch.cuda.device_count())
-
-        logger = SingletonLogger.get_logger()
-
-        gpu_memory_monitor = GPUMemoryMonitor("cuda")
-        logger.info(f"{color.yellow} {gpu_memory_monitor.get_device_info()}{color.reset}")
-
-        # Model-level config
-        if builder_args.params_table:
-            model_config = ModelArgs.from_table(builder_args.params_table)
-        else:
-            raise NotImplementedError()
-        # Transformer-level config
-        config = TransformerArgs.from_params(model_config.transformer_args["text"])
-        logger.info(f"Transformer Config: {config}")
-
-        #TODO: Move into head of file after solving circular import
-        from torchchat.distributed.checkpoint_utils import (
-            load_model_weights,
-            )
-
-        # Validate pipeline degree
-        assert config.n_layers % pp_degree == 0
-
-        # Create device mesh
-        device_mesh = dist.init_device_mesh(
-            "cuda",
-            (pp_degree, tp_degree),
-            mesh_dim_names=("pp", "tp")
-            )
-        tp_mesh = device_mesh["tp"]
-        pp_mesh = device_mesh["pp"]
-        logger.info(f"Created device mesh: {device_mesh}\n{tp_mesh=}, {pp_mesh=}")
-
-        pp_rank = pp_mesh.get_local_rank()
-        logger.info(f"{pp_degree=}, {tp_degree=}")
-
-        # Assuming same number of GPUs per node
-        device = torch.device(f"cuda:{rank % torch.cuda.device_count()}")
-
-        # Fill in PP configs
-        config.stage_idx = pp_rank
-        config.n_stages = pp_degree
-
-        with torch.device("meta"):
-            # TODO: we should create model instead of Transformer
-            model = Transformer(config)
-
-        # Distribute model on TP mesh
-        # (Surprisingly, this works even though model is on meta device and mesh is of
-        # cuda devices)
-        model.distribute(tp_mesh)
-        if rank == 0:
-            logger.info(f"Model: {model}")
-
-        # Load weights
-        logger.info(f"Loading weights for {pp_rank=} on {device=}")
-        with CUDATrackTime() as timer:
-            load_model_weights(model, builder_args.distribution_path, device, config, builder_args.chpt_from)
-
-        logger.info(
-            f"{color.green}Total weight loading time: {timer.get_time()} {timer.unit} for rank {rank}{color.reset}"
-        )
-
-        # Setup KV caches (after model distribution)
-        # The number of cache lanes is the same as the maximum number of
-        # micro-batches that can be "in flight" in parallel -- imagine each
-        # micro-batch takes 1 "pipeline lane," they need distinct KV cache spaces.
-        # When decoding is done for certain micro-batches, we can reuse the KV cache
-        # lanes.
-        # TODO: bump up the lane count
-        pipeline_lanes = 1
-        seqlen_prefill=1024
-        with device:
-            model.setup_caches(1, seqlen_prefill, cache_lanes=pipeline_lanes)
-
-        # info on stage size and params
-        # stage_size = get_module_size(model)
-        # stage_size_formatted = bytes_to_readable(stage_size)
-        # stage_num_params = get_num_params(model)
-        # logger.info(
-        #     f"Stage {rank} has {color.blue}{stage_num_params} params{color.reset}, Size: {color.blue}{stage_size_formatted}{color.reset}"
-        # )
-        model.eval()
-
-        model.text_transformer_args = None
-        model.config.model_type = model_config.model_type
-        model.device_mesh = device_mesh
+    # elif builder_args.distributed:
+    #     pp_degree = builder_args.pp
+    #     tp_degree = builder_args.tp
+    #
+    #     init_distributed()
+    #     rank = dist.get_rank()
+    #     torch.cuda.set_device(rank % torch.cuda.device_count())
+    #
+    #     logger = SingletonLogger.get_logger()
+    #
+    #     gpu_memory_monitor = GPUMemoryMonitor("cuda")
+    #     logger.info(f"{color.yellow} {gpu_memory_monitor.get_device_info()}{color.reset}")
+    #
+    #     # Model-level config
+    #     if builder_args.params_table:
+    #         model_config = ModelArgs.from_table(builder_args.params_table)
+    #     else:
+    #         raise NotImplementedError()
+    #     # Transformer-level config
+    #     config = TransformerArgs.from_params(model_config.transformer_args["text"])
+    #     logger.info(f"Transformer Config: {config}")
+    #
+    #     #TODO: Move into head of file after solving circular import
+    #     from torchchat.distributed.checkpoint_utils import (
+    #         load_model_weights,
+    #         )
+    #
+    #     # Validate pipeline degree
+    #     assert config.n_layers % pp_degree == 0
+    #
+    #     # Create device mesh
+    #     device_mesh = dist.init_device_mesh(
+    #         "cuda",
+    #         (pp_degree, tp_degree),
+    #         mesh_dim_names=("pp", "tp")
+    #         )
+    #     tp_mesh = device_mesh["tp"]
+    #     pp_mesh = device_mesh["pp"]
+    #     logger.info(f"Created device mesh: {device_mesh}\n{tp_mesh=}, {pp_mesh=}")
+    #
+    #     pp_rank = pp_mesh.get_local_rank()
+    #     logger.info(f"{pp_degree=}, {tp_degree=}")
+    #
+    #     # Assuming same number of GPUs per node
+    #     device = torch.device(f"cuda:{rank % torch.cuda.device_count()}")
+    #
+    #     # Fill in PP configs
+    #     config.stage_idx = pp_rank
+    #     config.n_stages = pp_degree
+    #
+    #     with torch.device("meta"):
+    #         # TODO: we should create model instead of Transformer
+    #         model = Transformer(config)
+    #
+    #     # Distribute model on TP mesh
+    #     # (Surprisingly, this works even though model is on meta device and mesh is of
+    #     # cuda devices)
+    #     model.distribute(tp_mesh)
+    #     if rank == 0:
+    #         logger.info(f"Model: {model}")
+    #
+    #     # Load weights
+    #     logger.info(f"Loading weights for {pp_rank=} on {device=}")
+    #     with CUDATrackTime() as timer:
+    #         load_model_weights(model, builder_args.distribution_path, device, config, builder_args.chpt_from)
+    #
+    #     logger.info(
+    #         f"{color.green}Total weight loading time: {timer.get_time()} {timer.unit} for rank {rank}{color.reset}"
+    #     )
+    #
+    #     # Setup KV caches (after model distribution)
+    #     # The number of cache lanes is the same as the maximum number of
+    #     # micro-batches that can be "in flight" in parallel -- imagine each
+    #     # micro-batch takes 1 "pipeline lane," they need distinct KV cache spaces.
+    #     # When decoding is done for certain micro-batches, we can reuse the KV cache
+    #     # lanes.
+    #     # TODO: bump up the lane count
+    #     pipeline_lanes = 1
+    #     seqlen_prefill=1024
+    #     with device:
+    #         model.setup_caches(1, seqlen_prefill, cache_lanes=pipeline_lanes)
+    #
+    #     # info on stage size and params
+    #     # stage_size = get_module_size(model)
+    #     # stage_size_formatted = bytes_to_readable(stage_size)
+    #     # stage_num_params = get_num_params(model)
+    #     # logger.info(
+    #     #     f"Stage {rank} has {color.blue}{stage_num_params} params{color.reset}, Size: {color.blue}{stage_size_formatted}{color.reset}"
+    #     # )
+    #     model.eval()
+    #
+    #     model.text_transformer_args = None
+    #     model.config.model_type = model_config.model_type
+    #     model.device_mesh = device_mesh
     else:
         with measure_time("Time to load model: {time:.02f} seconds"):
             model = _load_model(builder_args)
@@ -765,7 +781,7 @@ def _initialize_model(
                 model.setup_caches(
                     max_batch_size=1,
                     max_seq_length=max_seq_length
-                    or model.text_transformer_args.max_seq_length,
+                                   or model.text_transformer_args.max_seq_length,
                 )
 
         model.to(dtype=builder_args.precision)

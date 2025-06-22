@@ -6,6 +6,7 @@
 import json
 import logging
 import os
+import sys
 import warnings
 from abc import ABC, abstractmethod
 
@@ -29,6 +30,7 @@ from torch.distributed.tensor.parallel import (
     SequenceParallel,
 )
 from torch.nn import functional as F
+import torch.distributed as dist
 
 try:
     # TODO: remove this after we figure out where in torchtune an `evaluate` module
@@ -67,7 +69,6 @@ def identity(**kwargs):
     return list(kwargs.values())[0]
 
 
-
 class MultiModalProjector(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, act: nn.Module):
         super().__init__()
@@ -85,13 +86,13 @@ class MultiModalProjector(nn.Module):
 
 class ConcateFusion(nn.Module):
     def __init__(
-        self,
-        encoder: nn.Module,
-        decoder: nn.Module,
-        token_embedding_name="tok_embeddings",
-        mm_proj_in_channels=1024,
-        mm_proj_out_channels=4096,
-        mm_proj_activation=nn.GELU(),
+            self,
+            encoder: nn.Module,
+            decoder: nn.Module,
+            token_embedding_name="tok_embeddings",
+            mm_proj_in_channels=1024,
+            mm_proj_out_channels=4096,
+            mm_proj_activation=nn.GELU(),
     ):
         super().__init__()
         self.encoder = encoder
@@ -105,19 +106,19 @@ class ConcateFusion(nn.Module):
         self.decoder.__setattr__(token_embedding_name, None)
 
         self.mm_projector = MultiModalProjector(
-                in_channels=mm_proj_in_channels,
-                out_channels=mm_proj_out_channels,
-                act=mm_proj_activation,
+            in_channels=mm_proj_in_channels,
+            out_channels=mm_proj_out_channels,
+            act=mm_proj_activation,
         )
 
     def forward(
-        self,
-        tokens: Tensor,
-        *,
-        post_tokens: Optional[Tensor] = None,
-        encoder_input: Optional[Tensor] = None,
-        encoder_mask: Optional[torch.Tensor] = None,
-        input_pos: Optional[torch.Tensor] = None,
+            self,
+            tokens: Tensor,
+            *,
+            post_tokens: Optional[Tensor] = None,
+            encoder_input: Optional[Tensor] = None,
+            encoder_mask: Optional[torch.Tensor] = None,
+            input_pos: Optional[torch.Tensor] = None,
     ) -> Tensor:
         if encoder_input is not None:
             encoder_input = encoder_input.view(1, 1, *encoder_input.shape)
@@ -151,11 +152,11 @@ class ConcateFusion(nn.Module):
         return selected_image_feature
 
     def _get_decoder_input(
-        self,
-        tokens: Tensor,
-        *,
-        encoder_output: Optional[Tensor],
-        post_tokens: Optional[Tensor],
+            self,
+            tokens: Tensor,
+            *,
+            encoder_output: Optional[Tensor],
+            post_tokens: Optional[Tensor],
     ) -> Tensor:
         if encoder_output is None:
             assert post_tokens is None
@@ -344,12 +345,12 @@ class ModelArgs:
     max_seq_length: Optional[int] = None
 
     def __init__(
-        self,
-        transformer_args: Dict[str, Dict[str, Any]],
-        model_type: ModelType = ModelType.TextOnly,
-        use_tiktoken: bool = False,
-        use_hf_tokenizer: bool = False,
-        tokenizer_prepend_bos: bool = True,
+            self,
+            transformer_args: Dict[str, Dict[str, Any]],
+            model_type: ModelType = ModelType.TextOnly,
+            use_tiktoken: bool = False,
+            use_hf_tokenizer: bool = False,
+            tokenizer_prepend_bos: bool = True,
     ) -> None:
         self._sanity_check(transformer_args, model_type)
 
@@ -362,9 +363,9 @@ class ModelArgs:
         self.tokenizer_prepend_bos = tokenizer_prepend_bos
 
     def _sanity_check(
-        self,
-        transformer_args: Dict[str, Dict[str, Any]],
-        model_type: ModelType,
+            self,
+            transformer_args: Dict[str, Dict[str, Any]],
+            model_type: ModelType,
     ) -> None:
         assert isinstance(model_type, ModelType), model_type
         assert isinstance(transformer_args, dict)
@@ -444,25 +445,22 @@ class ModelArgs:
 
 
 class KVCache(nn.Module):
-    def __init__(
-        self,
-        max_batch_size,
-        max_seq_length,
-        n_heads,
-        head_dim,
-        dtype=None,
-    ):
+    def __init__(self, max_batch_size, max_seq_length, n_heads, head_dim, dtype=None):
         super().__init__()
-        # print(f"dtype on entry {dtype}")
         if not dtype:
             dtype = get_precision()
-        # print(f"dtype on get_prec {dtype}")
+
+        # Single cache for real data only
         cache_shape = (max_batch_size, n_heads, max_seq_length, head_dim)
         self.register_buffer("k_cache", torch.zeros(cache_shape, dtype=dtype))
         self.register_buffer("v_cache", torch.zeros(cache_shape, dtype=dtype))
 
     def update(self, input_pos, k_val, v_val):
-        # input_pos: [S], k_val: [B, H, S, D]
+        # Only update with first sample (real data)
+        if k_val.size(0) > 1:
+            k_val = k_val[0:1]
+            v_val = v_val[0:1]
+
         assert input_pos.shape[0] == k_val.shape[2]
 
         k_out = torch.ops.aten.index_put_(self.k_cache, [None, None, input_pos], k_val)
@@ -570,11 +568,25 @@ class TextOnlyModel(Model):
         if not skip_model_init:
             self.text_transformer_args = self.model.config
 
-    def forward(self, tokens: Tensor, input_pos: Optional[Tensor] = None) -> Tensor:
-        return self.model(tokens, input_pos)
+    def forward(self, tokens: Tensor, input_pos: Optional[Tensor] = None, cache_lane: int = 0) -> Tensor:
+        # Pass cache_lane to the underlying model if it supports it
+        if hasattr(self.model, 'forward'):
+            # Check if the model's forward accepts cache_lane
+            import inspect
+            sig = inspect.signature(self.model.forward)
+            if 'cache_lane' in sig.parameters:
+                return self.model(tokens, input_pos, cache_lane=cache_lane)
+            else:
+                return self.model(tokens, input_pos)
+        else:
+            return self.model(tokens, input_pos)
 
     def setup_caches(self, max_batch_size, max_seq_length):
-        self.model.setup_caches(max_batch_size, max_seq_length)
+        # When using pipeline parallelism, we need multiple cache lanes for microbatches
+        cache_lanes = 1
+        if hasattr(self, 'pp_degree') and self.pp_degree > 1:
+            cache_lanes = max(self.pp_degree, 2)  # Match num_microbatches
+        self.model.setup_caches(max_batch_size, max_seq_length, cache_lanes=cache_lanes)
 
 
 class Llama31Model(Model):
@@ -590,13 +602,13 @@ class Llama31Model(Model):
 
 class FlamingoModel(Model):
     def forward(
-        self,
-        tokens: torch.Tensor,
-        *,
-        mask: Optional[torch.Tensor] = None,
-        encoder_input: Optional[Dict] = None,
-        encoder_mask: Optional[torch.Tensor] = None,
-        input_pos: Optional[torch.Tensor] = None,
+            self,
+            tokens: torch.Tensor,
+            *,
+            mask: Optional[torch.Tensor] = None,
+            encoder_input: Optional[Dict] = None,
+            encoder_mask: Optional[torch.Tensor] = None,
+            input_pos: Optional[torch.Tensor] = None,
     ) -> Tensor:
         return self.model(
             tokens,
@@ -620,12 +632,12 @@ class FlamingoModel(Model):
 
 class LlavaModel(Model):
     def forward(
-        self,
-        tokens: Tensor,
-        *,
-        encoder_input: Optional[Dict[str, Tensor]] = None,
-        post_tokens: Optional[Tensor] = None,
-        input_pos: Optional[Tensor] = None,
+            self,
+            tokens: Tensor,
+            *,
+            encoder_input: Optional[Dict[str, Tensor]] = None,
+            post_tokens: Optional[Tensor] = None,
+            input_pos: Optional[Tensor] = None,
     ) -> Tensor:
         return self.model(tokens, encoder_input=encoder_input, post_tokens=post_tokens, input_pos=input_pos)
 
@@ -639,6 +651,12 @@ MODEL_TYPE_TO_CLASS = {
     ModelType.Llama3_1: Llama31Model,
     ModelType.Llava: LlavaModel,
 }
+
+
+def debug_print(message: str, force: bool = False):
+    """Print debug message if DEBUG_TP environment variable is set or force=True"""
+    if force or os.getenv('DEBUG_TP'):
+        print(message, flush=True)
 
 
 class Transformer(nn.Module):
@@ -657,8 +675,8 @@ class Transformer(nn.Module):
         self.layers = nn.ModuleDict()
 
         for layer_id in range(
-            layers_per_stage * config.stage_idx,
-            layers_per_stage * (config.stage_idx + 1),
+                layers_per_stage * config.stage_idx,
+                layers_per_stage * (config.stage_idx + 1),
         ):
             self.layers[str(layer_id)] = TransformerBlock(config, layer_id=layer_id)
 
@@ -682,8 +700,8 @@ class Transformer(nn.Module):
 
     def setup_caches(self, max_batch_size, max_seq_length, cache_lanes: int = 1):
         if (
-            self.max_seq_length >= max_seq_length
-            and self.max_batch_size >= max_batch_size
+                self.max_seq_length >= max_seq_length
+                and self.max_batch_size >= max_batch_size
         ):
             return
         max_seq_length = find_multiple(max_seq_length, 8)
@@ -729,10 +747,35 @@ class Transformer(nn.Module):
 
     def forward(self, x: Tensor, input_pos: Optional[Tensor] = None, cache_lane: int = 0) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
+
         if os.getenv('DEBUG_CACHE'):
             print("Transformer forward input pos", input_pos)
-        mask = self.causal_mask[None, None, input_pos]
-        freqs_cis = self.freqs_cis[input_pos]
+
+        # Fix: Handle both 1D and 2D input_pos properly
+        if input_pos.dim() == 2:
+            # For batch processing in pipeline parallelism
+            actual_positions = input_pos[0]  # Take first row as all should be same
+        else:
+            actual_positions = input_pos
+
+        # Create mask based on actual positions and sequence length
+        seq_len = x.size(1)
+
+        # For decode phase (single token), we need the full causal mask slice
+        if seq_len == 1:
+            # During decode, we need to attend to all previous positions
+            # input_pos tells us the current position
+            current_pos = actual_positions.item() if actual_positions.numel() == 1 else actual_positions[-1].item()
+            # Create a mask that allows attention to all positions up to current_pos
+            mask = self.causal_mask[current_pos:current_pos + 1, :current_pos + 1]
+            # Expand mask dimensions for attention: [1, 1, 1, seq_len]
+            mask = mask.unsqueeze(0).unsqueeze(0)
+        else:
+            # For prefill phase, use the standard causal mask
+            mask = self.causal_mask[None, None, actual_positions]
+
+        freqs_cis = self.freqs_cis[actual_positions]
+
         if self.tok_embeddings:
             x = self.tok_embeddings(x)
 
@@ -741,7 +784,7 @@ class Transformer(nn.Module):
                 x = x * self.config.embedding_multiplier
 
         for _, layer in self.layers.items():
-            x = layer(x, input_pos, freqs_cis, mask, cache_lane=cache_lane)
+            x = layer(x, actual_positions, freqs_cis, mask, cache_lane=cache_lane)
 
         if self.norm:
             x = self.norm(x)
@@ -772,7 +815,7 @@ class TransformerBlock(nn.Module):
         self.feed_forward.distribute(device_mesh)
 
     def forward(
-        self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor, cache_lane: int = 0
+            self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor, cache_lane: int = 0
     ) -> Tensor:
         h = x + self.attention(
             self.attention_norm(x), freqs_cis, mask, input_pos, cache_lane=cache_lane
@@ -787,8 +830,6 @@ class Attention(nn.Module):
         assert config.dim % config.n_heads == 0
 
         # key, query, value projections for all heads, but in a batch
-        # total_head_dim = (config.n_heads + 2 * config.n_local_heads) * config.head_dim
-        # self.wqkv = nn.Linear(config.dim, total_head_dim, bias=config.attention_bias)
         self.wq = nn.Linear(config.dim, config.n_heads * config.head_dim, bias=config.attention_bias)
         self.wk = nn.Linear(
             config.dim, config.n_local_heads * config.head_dim, bias=config.attention_bias
@@ -807,25 +848,31 @@ class Attention(nn.Module):
         self.attention_scale = config.attention_multiplier
         self.layer_id = layer_id
         self._register_load_state_dict_pre_hook(self.load_hook)
+        self._debug_step = 0
 
     def setup_cache(self, max_batch_size, max_seq_length, cache_lanes: int = 1):
-        n_local_heads = self.n_local_heads
-        # If TP is enabled, the heads would be divided and assigned to different ranks
-        if hasattr(self, "tp_degree"):
+        """Single cache for real data only."""
+        # Check if TP has been applied by checking if weights are DTensors
+        if hasattr(self.wk, 'weight') and isinstance(self.wk.weight, DTensor):
+            # Get the actual local KV heads from the weight shape
+            # After TP with ColwiseParallel, wk.weight shape is [n_local_kv_heads * head_dim, dim]
+            # where n_local_kv_heads = n_kv_heads / tp_degree
+            n_local_heads = self.wk.weight.shape[0] // self.head_dim
+            debug_print(f"[Attention.setup_cache] Detected TP, using n_local_heads={n_local_heads} (KV heads)")
+            debug_print(f"[Attention.setup_cache] wk.weight.shape={self.wk.weight.shape}, head_dim={self.head_dim}")
+        elif hasattr(self, "tp_degree"):
+            # Fallback to tp_degree if set
             n_local_heads = self.n_local_heads // self.tp_degree
+            debug_print(f"[Attention.setup_cache] Using tp_degree={self.tp_degree}, n_local_heads={n_local_heads}")
+        else:
+            # No TP
+            n_local_heads = self.n_local_heads
+            debug_print(f"[Attention.setup_cache] No TP detected, using n_local_heads={n_local_heads}")
 
-        self.kv_cache = nn.ModuleList([
-            KVCache(max_batch_size, max_seq_length, n_local_heads, self.head_dim)
-            for _ in range(cache_lanes)
-        ])
+        # Single cache, no lanes needed
+        self.kv_cache = KVCache(max_batch_size, max_seq_length, n_local_heads, self.head_dim)
 
     def load_hook(self, state_dict, prefix, *args):
-        # if prefix + "wq.weight" in state_dict:
-        #     wq = state_dict.pop(prefix + "wq.weight")
-        #     wk = state_dict.pop(prefix + "wk.weight")
-        #     wv = state_dict.pop(prefix + "wv.weight")
-        #     state_dict[prefix + "wqkv.weight"] = torch.cat([wq, wk, wv])
-
         for tensor_suffix in ["weight", "bias"]:
             wqkv_key = f"{prefix}wqkv.{tensor_suffix}"
             if wqkv_key in state_dict:
@@ -837,84 +884,67 @@ class Attention(nn.Module):
                 state_dict[f"{prefix}wk.{tensor_suffix}"] = wk
                 state_dict[f"{prefix}wv.{tensor_suffix}"] = wv
 
-        return
-
-        def _unfuse_wqkv_state_dict(
-            state_dict: Dict[str, torch.Tensor],
-            dim: int,
-        ):
-            for key in list(state_dict):
-                if key.endswith("wqkv.weight"):
-                    tensor = state_dict[key]
-                    wq_key = key.replace("wqkv.weight", "wq.weight")
-                    state_dict[wq_key] = tensor[:dim]
-                    wk_key = key.replace("wqkv.weight", "wk.weight")
-                    wv_key = key.replace("wqkv.weight", "wv.weight")
-                    wk, wv = tensor[dim:].chunk(2, 0)
-                    state_dict[wk_key] = wk
-                    state_dict[wv_key] = wv
-                    state_dict.pop(key)
-                else:
-                    continue
-
-        _unfuse_wqkv_state_dict(state_dict, self.dim)
-
     def distribute(self, device_mesh: DeviceMesh):
         self.tp_degree = device_mesh.size()
-        parallelize_module(self.wq, device_mesh, ColwiseParallel())
-        parallelize_module(self.wk, device_mesh, ColwiseParallel())
-        parallelize_module(self.wv, device_mesh, ColwiseParallel())
-        parallelize_module(self.wo, device_mesh, RowwiseParallel())
 
-    def forward(
-        self,
-        x: Tensor,
-        freqs_cis: Tensor,
-        mask: Tensor,
-        input_pos: Optional[Tensor] = None,
-        cache_lane: int = 0,
-    ) -> Tensor:
+    def forward(self, x, freqs_cis, mask, input_pos=None, cache_lane: int = 0):
+        """Fixed forward that handles TP properly."""
         bsz, seqlen, _ = x.shape
 
+        # Debug logging only if DEBUG_TP is set
+        if os.getenv('DEBUG_TP'):
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            debug_print(f"[Rank {rank}, Layer {self.layer_id}] Attention forward start")
+            debug_print(f"  x.shape={x.shape}, is DTensor={isinstance(x, DTensor)}")
+            if isinstance(x, DTensor):
+                debug_print(f"  x DTensor placements={x.placements}")
+
+        # Process QKV
         q = self.wq(x)
         k = self.wk(x)
         v = self.wv(x)
-        # kv_size = self.n_local_heads * self.head_dim
-        # q, k, v = self.wqkv(x).split([self.dim, kv_size, kv_size], dim=-1)
 
-        # Giving "-1" to view ops so that they infer the correct number of heads
-        # from the input tensor.  This is done to support both TP and non-TP
-        # cases where the former would divide n_heads by tp_degree.
-        # -1 = self.n_heads
+        # Reshape
         q = q.view(bsz, seqlen, -1, self.head_dim)
-        # -1 = self.n_local_heads
         k = k.view(bsz, seqlen, -1, self.head_dim)
-        # -1 = self.n_local_heads
         v = v.view(bsz, seqlen, -1, self.head_dim)
 
+        # Get the actual number of heads on this rank
+        n_heads_local = q.size(2)
+        n_kv_heads_local = k.size(2)
+
+        # Apply rotary embeddings
         q = apply_rotary_emb(q, freqs_cis)
         k = apply_rotary_emb(k, freqs_cis)
 
         q, k, v = (x.transpose(1, 2) for x in (q, k, v))
+
+        # Update cache (only processes real data internally)
         if self.kv_cache is not None:
-            k, v = self.kv_cache[cache_lane].update(input_pos, k, v)
-        k = k.repeat_interleave(self.n_heads // self.n_local_heads, dim=1)
-        v = v.repeat_interleave(self.n_heads // self.n_local_heads, dim=1)
+            k, v = self.kv_cache.update(input_pos, k, v)
+
+            # Handle decode phase slicing
+            if seqlen == 1:
+                current_pos = input_pos.item() if input_pos.numel() == 1 else input_pos[-1].item()
+                k = k[:, :, :current_pos + 1, :]
+                v = v[:, :, :current_pos + 1, :]
+
+        # Repeat KV heads - use local head counts
+        n_rep = n_heads_local // n_kv_heads_local
+        if n_rep > 1:
+            k = k.repeat_interleave(n_rep, dim=1)
+            v = v.repeat_interleave(n_rep, dim=1)
+
+        # Attention
         y = F.scaled_dot_product_attention(
-            query=q,
-            key=k,
-            value=v,
-            attn_mask=mask,
-            dropout_p=0.0,
-            # This is None (default) for llama architecture and set for granite
-            # architectures
-            scale=self.attention_scale,
+            query=q, key=k, value=v, attn_mask=mask,
+            dropout_p=0.0, scale=self.attention_scale,
         )
 
-        # -1 = self.dim
+        # Reshape output
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
-
         y = self.wo(y)
+
         return y
 
 
@@ -978,23 +1008,23 @@ def apply_scaling(freqs: torch.Tensor, rope_scaling: Dict[str, Any]):
         else:
             assert low_freq_wavelen != high_freq_wavelen
             smooth = (old_context_len / wavelen - low_freq_factor) / (
-                high_freq_factor - low_freq_factor
+                    high_freq_factor - low_freq_factor
             )
             new_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
     return torch.tensor(new_freqs, dtype=freqs.dtype, device=freqs.device)
 
 
 def precompute_freqs_cis(
-    n_elem: int,
-    seq_len: int,
-    base: int = 10000,
-    dtype=None,
-    rope_scaling: Optional[Dict[str, Any]] = None,
+        n_elem: int,
+        seq_len: int,
+        base: int = 10000,
+        dtype=None,
+        rope_scaling: Optional[Dict[str, Any]] = None,
 ) -> Tensor:
     if not dtype:
         dtype = get_precision()
     freqs = 1.0 / (
-        base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem)
+            base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem)
     )
     t = torch.arange(seq_len, device=freqs.device)
     if rope_scaling is not None:
@@ -1032,6 +1062,7 @@ try:
     from executorch.kernels import quantized  # no-qa
     # For llama::sdpa_with_kv_cache.out, preprocess ops
     from executorch.extension.llm.custom_ops import custom_ops  # no-qa
+
 
     class PTEModel(nn.Module):
         def __init__(self, config, path) -> None:

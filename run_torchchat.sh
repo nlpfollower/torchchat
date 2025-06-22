@@ -2,8 +2,8 @@
 
 set -ex
 
-NGPU=${NGPU:-"1"}
-LOG_RANK=${LOG_RANK:-0}
+NGPU=${NGPU:-"2"}
+LOG_RANK=${LOG_RANK:-0,1}
 
 overrides=""
 if [ $# -ne 0 ]; then

@@ -80,6 +80,8 @@ def add_arguments_for_verb(parser, verb: str) -> None:
     if verb in GENERATION_VERBS:
         _add_exported_input_path_args(parser)
         _add_generation_args(parser, verb)
+    if verb == "server":
+        _add_server_args(parser)
     if verb == "export":
         _add_export_output_path_args(parser)
         _add_export_args(parser)
@@ -96,6 +98,19 @@ def add_arguments_for_verb(parser, verb: str) -> None:
     # WIP Features (suppressed from --help)
     _add_distributed_args(parser)
     _add_speculative_execution_args(parser)
+
+
+# Add CLI Args specific to server command
+def _add_server_args(parser) -> None:
+    server_parser = parser.add_argument_group(
+        "Server Configuration", "Options for the inference server"
+    )
+    server_parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="Port to run the inference server on (default: 5000)",
+    )
 
 
 # Add CLI Args related to model specification (what base model to use)
@@ -131,6 +146,20 @@ def _add_model_specification_args(parser) -> None:
         type=Path,
         default=None,
         help="Use the specified model checkpoint directory",
+    )
+    model_specification_parser.add_argument(
+        "--checkpoint-folder",
+        type=str,
+        default="checkpoint",
+        help="Checkpoint folder name for DCP loading (default: checkpoint)"
+    )
+
+    model_specification_parser.add_argument(
+        "--dcp-model-size",
+        type=str,
+        default="3B",
+        choices=["70B", "30B", "8B", "3B", "1B", "405B"],  # Add available sizes
+        help="Model size to use when loading DCP checkpoints (default: 3B)"
     )
 
     _add_custom_model_args(model_specification_parser)
@@ -452,7 +481,7 @@ def _add_distributed_args(parser) -> None:
         "--tp",
         "--tensor-parallel",
         type=int,
-        default=2,
+        default=1,
         help="Tensor parallel degree",
     )
     parser.add_argument(
