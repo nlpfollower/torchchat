@@ -14,6 +14,8 @@ import argparse
 import json
 import os
 from pathlib import Path
+
+import pydevd_pycharm
 import torch
 from safetensors.torch import save_file
 from tqdm import tqdm
@@ -45,6 +47,8 @@ def parse_args():
                         choices=["auto", "float32", "float16", "bfloat16"],
                         help="Convert weights to this dtype (auto keeps original)")
     parser.add_argument("--vocab-size", type=int, default=128256, help="Vocabulary size")
+    parser.add_argument("--download-hf-tokenizer", action="store_true",
+                        help="Download tokenizer from HuggingFace instead of using local files")
     return parser.parse_args()
 
 
@@ -212,6 +216,109 @@ def convert_dtype(state_dict, target_dtype_str):
     return converted
 
 
+def create_tokenizer_config_files(output_dir: Path):
+    """Create the necessary tokenizer configuration files for vLLM."""
+
+    # 1. Create tokenizer_config.json
+    tokenizer_config = {
+        "add_bos_token": False,
+        "add_eos_token": False,
+        "added_tokens_decoder": {
+            "128000": {"content": "<|begin_of_text|>", "lstrip": False, "normalized": False, "rstrip": False,
+                       "single_word": False, "special": True},
+            "128001": {"content": "<|end_of_text|>", "lstrip": False, "normalized": False, "rstrip": False,
+                       "single_word": False, "special": True},
+            "128002": {"content": "<|reserved_special_token_0|>", "lstrip": False, "normalized": False, "rstrip": False,
+                       "single_word": False, "special": True},
+            "128003": {"content": "<|reserved_special_token_1|>", "lstrip": False, "normalized": False, "rstrip": False,
+                       "single_word": False, "special": True},
+            "128004": {"content": "<|reserved_special_token_2|>", "lstrip": False, "normalized": False, "rstrip": False,
+                       "single_word": False, "special": True},
+            "128005": {"content": "<|reserved_special_token_3|>", "lstrip": False, "normalized": False, "rstrip": False,
+                       "single_word": False, "special": True},
+            "128006": {"content": "<|start_header_id|>", "lstrip": False, "normalized": False, "rstrip": False,
+                       "single_word": False, "special": True},
+            "128007": {"content": "<|end_header_id|>", "lstrip": False, "normalized": False, "rstrip": False,
+                       "single_word": False, "special": True},
+            "128008": {"content": "<|reserved_special_token_4|>", "lstrip": False, "normalized": False, "rstrip": False,
+                       "single_word": False, "special": True},
+            "128009": {"content": "<|eot_id|>", "lstrip": False, "normalized": False, "rstrip": False,
+                       "single_word": False, "special": True}
+        },
+        "bos_token": "<|begin_of_text|>",
+        "clean_up_tokenization_spaces": True,
+        "eos_token": "<|eot_id|>",
+        "model_input_names": ["input_ids", "attention_mask"],
+        "model_max_length": 131072,
+        "pad_token": "<|reserved_special_token_0|>",
+        "tokenizer_class": "PreTrainedTokenizerFast",
+        "chat_template": "{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\\n\\n'+ message['content'] | trim + '<|eot_id|>' %}{% if loop.index0 == 0 %}{% set content = bos_token + content %}{% endif %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\\n\\n' }}{% endif %}"
+    }
+
+    with open(output_dir / "tokenizer_config.json", "w") as f:
+        json.dump(tokenizer_config, f, indent=2)
+    print("  Created: tokenizer_config.json")
+
+    # 2. Create special_tokens_map.json
+    special_tokens_map = {
+        "bos_token": {
+            "content": "<|begin_of_text|>",
+            "lstrip": False,
+            "normalized": False,
+            "rstrip": False,
+            "single_word": False
+        },
+        "eos_token": {
+            "content": "<|eot_id|>",
+            "lstrip": False,
+            "normalized": False,
+            "rstrip": False,
+            "single_word": False
+        },
+        "pad_token": {
+            "content": "<|reserved_special_token_0|>",
+            "lstrip": False,
+            "normalized": False,
+            "rstrip": False,
+            "single_word": False
+        }
+    }
+
+    with open(output_dir / "special_tokens_map.json", "w") as f:
+        json.dump(special_tokens_map, f, indent=2)
+    print("  Created: special_tokens_map.json")
+
+    # 3. Create generation_config.json
+    generation_config = {
+        "bos_token_id": 128000,
+        "eos_token_id": [128001, 128009],
+        "pad_token_id": 128002,
+        "do_sample": True,
+        "temperature": 0.6,
+        "max_length": 8192,
+        "top_p": 0.9
+    }
+
+    with open(output_dir / "generation_config.json", "w") as f:
+        json.dump(generation_config, f, indent=2)
+    print("  Created: generation_config.json")
+
+
+def download_hf_tokenizer(output_dir: Path, model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct"):
+    """Download tokenizer from HuggingFace."""
+    try:
+        from transformers import AutoTokenizer
+        print(f"\nDownloading tokenizer from HuggingFace: {model_name}")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer.save_pretrained(output_dir)
+        print(f"  Successfully downloaded tokenizer to: {output_dir}")
+        return True
+    except Exception as e:
+        print(f"  Failed to download tokenizer: {e}")
+        print("  You may need to authenticate with HuggingFace or use a different model name")
+        return False
+
+
 def copy_tokenizer_files(tokenizer_path: Path, output_dir: Path):
     """Copy tokenizer files from specified tokenizer directory to output."""
     # Common tokenizer file patterns
@@ -273,7 +380,7 @@ def calculate_intermediate_size(dim, ffn_dim_multiplier, multiple_of):
 
 
 def save_model_config(output_dir: Path, model_size: str, vocab_size: int, model_config):
-    """Save config.json for vLLM compatibility."""
+    """Save config.json in the format of config_model.json for vLLM compatibility."""
     # Calculate the actual intermediate size using the same logic as the model
     intermediate_size = calculate_intermediate_size(
         model_config.dim,
@@ -281,39 +388,53 @@ def save_model_config(output_dir: Path, model_size: str, vocab_size: int, model_
         model_config.multiple_of
     )
 
-    # Create config.json in Hugging Face format
+    # Determine max_position_embeddings based on rope_scaling
+    # For llama3 models, if rope_scaling is used, max_position_embeddings is typically larger
+    max_position_embeddings = 131072 if model_size in ["3B", "8B", "70B", "405B"] else model_config.max_seq_len
+
+    # Create config.json in the extended Hugging Face format (like config_model.json)
     config = {
         "architectures": ["LlamaForCausalLM"],
-        "model_type": "llama",
-        "vocab_size": vocab_size,
-        "hidden_size": model_config.dim,
-        "intermediate_size": intermediate_size,  # Use calculated size
-        "num_hidden_layers": model_config.n_layers,
-        "num_attention_heads": model_config.n_heads,
-        "num_key_value_heads": model_config.n_kv_heads if model_config.n_kv_heads is not None else model_config.n_heads,
-        "hidden_act": "silu",
-        "max_position_embeddings": model_config.max_seq_len,
-        "initializer_range": 0.02,
-        "rms_norm_eps": model_config.norm_eps,
-        "use_cache": True,
-        "tie_word_embeddings": False,
-        "rope_theta": model_config.rope_theta,
-        "rope_scaling": None,
         "attention_bias": False,
         "attention_dropout": 0.0,
+        "bos_token_id": 128000,
+        "eos_token_id": [128001, 128009],  # Both end_of_text and eot_id
+        "pad_token_id": 128004,  # Common Llama 3 pad token
+        "hidden_act": "silu",
+        "hidden_size": model_config.dim,
+        "initializer_range": 0.02,
+        "intermediate_size": intermediate_size,
+        "max_position_embeddings": max_position_embeddings,
         "mlp_bias": False,
+        "model_type": "llama",
+        "num_attention_heads": model_config.n_heads,
+        "num_hidden_layers": model_config.n_layers,
+        "num_key_value_heads": model_config.n_kv_heads if model_config.n_kv_heads is not None else model_config.n_heads,
+        "pretraining_tp": 1,
+        "rms_norm_eps": model_config.norm_eps,
+        "rope_scaling": {
+            "factor": 8.0,
+            "low_freq_factor": 1.0,
+            "high_freq_factor": 4.0,
+            "original_max_position_embeddings": 8192,
+            "rope_type": "llama3"
+        } if max_position_embeddings > 8192 else None,
+        "rope_theta": float(model_config.rope_theta),
+        "tie_word_embeddings": False,
         "torch_dtype": "bfloat16",
-        "transformers_version": "4.40.0",
+        "transformers_version": "4.42.3",
+        "use_cache": True,
+        "vocab_size": vocab_size
     }
 
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
-    print(f"Saved config.json for vLLM compatibility")
+    print(f"Saved config.json in extended format for vLLM compatibility")
     print(f"  Hidden size: {model_config.dim}")
     print(f"  Intermediate size: {intermediate_size}")
-    print(f"  FFN dim multiplier: {model_config.ffn_dim_multiplier}")
-    print(f"  Multiple of: {model_config.multiple_of}")
+    print(f"  Max position embeddings: {max_position_embeddings}")
+    print(f"  Rope scaling: {'enabled' if config['rope_scaling'] else 'disabled'}")
 
 
 def inspect_model_weights(state_dict):
@@ -432,14 +553,15 @@ def save_as_safetensors(state_dict, output_dir: Path, max_shard_size: int):
 def main():
     args = parse_args()
 
-    # Validate tokenizer path
-    if not args.tokenizer_path.exists():
-        print(f"ERROR: Tokenizer path does not exist: {args.tokenizer_path}")
-        return 1
+    # Validate tokenizer path (unless we're downloading from HF)
+    if not args.download_hf_tokenizer:
+        if not args.tokenizer_path.exists():
+            print(f"ERROR: Tokenizer path does not exist: {args.tokenizer_path}")
+            return 1
 
-    if not args.tokenizer_path.is_dir():
-        print(f"ERROR: Tokenizer path must be a directory: {args.tokenizer_path}")
-        return 1
+        if not args.tokenizer_path.is_dir():
+            print(f"ERROR: Tokenizer path must be a directory: {args.tokenizer_path}")
+            return 1
 
     # Initialize distributed if not already initialized
     if not dist.is_initialized():
@@ -449,7 +571,8 @@ def main():
 
     print(f"Loading DCP checkpoint from {args.dcp_dir}")
     print(f"Model size: {args.model_size}, Vocab size: {args.vocab_size}")
-    print(f"Tokenizer path: {args.tokenizer_path}")
+    if not args.download_hf_tokenizer:
+        print(f"Tokenizer path: {args.tokenizer_path}")
 
     # Load the model with checkpoint
     model, model_config = load_checkpoint_to_model(args.dcp_dir, args.model_size, args.vocab_size)
@@ -474,15 +597,35 @@ def main():
     # Save config.json for vLLM with the model_config
     save_model_config(args.output_dir, args.model_size, args.vocab_size, model_config)
 
-    # Copy tokenizer files from specified path
-    copied_files = copy_tokenizer_files(args.tokenizer_path, args.output_dir)
+    # Handle tokenizer files
+    print("\nSetting up tokenizer files...")
 
-    if not copied_files:
-        print("\nWARNING: No tokenizer files were copied. Make sure your tokenizer path contains the necessary files.")
+    if args.download_hf_tokenizer:
+        # Try to download from HuggingFace
+        success = download_hf_tokenizer(args.output_dir)
+        if not success:
+            print("  Falling back to creating tokenizer config files manually...")
+            create_tokenizer_config_files(args.output_dir)
+    else:
+        # Copy tokenizer files from specified path
+        copied_files = copy_tokenizer_files(args.tokenizer_path, args.output_dir)
+
+        # Always create the additional config files to ensure vLLM compatibility
+        print("\nCreating additional tokenizer configuration files...")
+        create_tokenizer_config_files(args.output_dir)
+
+        if not copied_files:
+            print("\nWARNING: No tokenizer files were copied from the source directory.")
+            print("The configuration files have been created, but you may need to add the actual tokenizer model file.")
 
     print(f"\nConversion complete! Output saved to: {args.output_dir}")
     total_size = sum(t.numel() * t.element_size() for t in state_dict.values() if isinstance(t, torch.Tensor))
     print(f"Total size: {total_size / 1e9:.2f} GB")
+
+    print("\nCreated files:")
+    for file in sorted(args.output_dir.glob("*")):
+        if file.is_file():
+            print(f"  - {file.name}")
 
     # Cleanup
     if dist.is_initialized():
